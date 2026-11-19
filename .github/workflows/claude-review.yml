@@ -46,6 +46,14 @@ on:
       CLAUDE_REVIEW_APP_PRIVATE_KEY:
         description: That GitHub App's private key.
         required: true
+    outputs:
+      # For a caller that checks what happened, such as this repository's self-test (.github/workflows/self-test.yml).
+      decision:
+        description: The request decision, as JSON, such as {"decision":"skip","reason":"draft"}.
+        value: ${{ jobs.decide.outputs.decision }}
+      sent:
+        description: '"true" only when the routine trigger accepted the review request.'
+        value: ${{ jobs.fire.outputs.sent }}
 
 permissions: {}
 

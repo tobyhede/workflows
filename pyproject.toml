@@ -49,6 +49,8 @@ module = [
     "test_react",
     "test_python_steps",
     "test_report",
+    "test_self_test",
+    "test_verify",
 ]
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
