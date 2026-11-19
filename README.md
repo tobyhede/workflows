@@ -245,7 +245,7 @@ The stub only posts a comment saying it received the request, so a test run is f
 
 [`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) runs when a pull request in this repository is opened, reopened or marked ready for review.
 
-1. The `review` job calls the pull request's own version of `.github/workflows/claude-review.yml`, by GitHub's self-repository form, `uses: $/.github/workflows/claude-review.yml`, so the version under test is the one in the pull request, at the exact commit that is running. (`$/` needs github.com and runner 2.336.0 or later.) It passes the stub routine's trigger id and token, never the real routine's.
+1. The `review` job calls the pull request's own version of `.github/workflows/claude-review.yml`, by its local path, so the version under test is the one in the pull request. It passes the stub routine's trigger id and token, never the real routine's.
 2. The review workflow decides, as it would for any repository. If it decides to request a review, it sends the request to the stub. The request text includes a link to this run attempt, `<server>/<repo>/actions/runs/<id>/attempts/<n>`.
 3. The stub posts a comment on the pull request, echoing the attempt's link.
 4. The `verify` job checks the review workflow's decision. If it decided to request a review and sent the request, the job reads the pull request's comments every 15 seconds, for up to 5 minutes, until it finds a comment that contains `integration-test: received` and this attempt's link. Only a comment whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR` counts, so someone else cannot pass the test by posting the marker on a public pull request. It then shows the reply, and its author, in a notice and in the run's summary.
