@@ -30,6 +30,9 @@ import threading
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "claude-review.yml"
+# This repository's own test of the reusable workflow, whose verify job runs a step file too. Each function below that
+# reads a workflow takes it as workflow, which is the reusable workflow unless a test names this one.
+SELF_TEST = ROOT / ".github" / "workflows" / "self-test.yml"
 # Where the step files live in this repository.
 STEPS_DIR = ROOT / "steps"
 # Where the workflow checks out this repository, in the job's workspace. Each job that checks it out names that
@@ -40,9 +43,9 @@ WORKFLOW_FILES_PREFIX = "${{ env.WORKFLOW_FILES }}/"
 
 
 @functools.cache
-def _yq(query):
+def _yq(query, workflow=WORKFLOW):
     """yq's raw output for query over the workflow, which the tests only read, so each query runs once."""
-    result = subprocess.run(["yq", "-r", query, str(WORKFLOW)], capture_output=True, text=True, check=True)
+    result = subprocess.run(["yq", "-r", query, str(workflow)], capture_output=True, text=True, check=True)
     return result.stdout
 
 
@@ -50,9 +53,9 @@ def _step_query(job, step_id):
     return f'.jobs.{job}.steps[] | select(.id == "{step_id}")'
 
 
-def step_field(job, step_id, path):
+def step_field(job, step_id, path, workflow=WORKFLOW):
     """yq's raw output for path (such as .with.path or ."continue-on-error") in the step, without its line break."""
-    return _yq(f"{_step_query(job, step_id)} | {path}").strip()
+    return _yq(f"{_step_query(job, step_id)} | {path}", workflow).strip()
 
 
 class StepResult:
@@ -106,45 +109,46 @@ def parse_outputs(text):
 
 
 @functools.cache
-def step_script(job, step_id):
+def step_script(job, step_id, workflow=WORKFLOW):
     """The step's run script and shell, read out of the workflow. Only bash scripts are run from it."""
-    script = _yq(_step_query(job, step_id) + " | .run")
+    script = _yq(_step_query(job, step_id) + " | .run", workflow)
     if script.strip() in ("", "null"):
-        raise LookupError(f"no step with id {step_id!r} and a run script in job {job!r} of {WORKFLOW}")
-    shell = _yq(_step_query(job, step_id) + ' | .shell // ""').strip()
+        raise LookupError(f"no step with id {step_id!r} and a run script in job {job!r} of {workflow}")
+    shell = _yq(_step_query(job, step_id) + ' | .shell // ""', workflow).strip()
     return script, shell
 
 
 @functools.cache
-def file_steps():
+def file_steps(workflow=WORKFLOW):
     """(job, step id) for every step of the workflow that runs a step file, named by its env's STEP_FILE."""
     steps = []
-    for job in _yq(".jobs | keys | .[]").split():
-        for step_id in _yq(f'.jobs.{job}.steps[] | select(.env.STEP_FILE != null) | .id').split("\n"):
+    # A job that calls a reusable workflow has no steps.
+    for job in _yq(".jobs | keys | .[]", workflow).split():
+        for step_id in _yq(f'.jobs.{job}.steps[]? | select(.env.STEP_FILE != null) | .id', workflow).split("\n"):
             if step_id:
                 steps.append((job, step_id))
     return tuple(steps)
 
 
-def file_steps_without_id():
+def file_steps_without_id(workflow=WORKFLOW):
     """The names of the steps that run a step file but have no id, which file_steps cannot list and the tests cannot
     find."""
     names: list[str] = []
-    for job in _yq(".jobs | keys | .[]").split():
-        query = f'.jobs.{job}.steps[] | select(.env.STEP_FILE != null and .id == null) | (.name // "(unnamed)")'
-        names.extend(line for line in _yq(query).split("\n") if line)
+    for job in _yq(".jobs | keys | .[]", workflow).split():
+        query = f'.jobs.{job}.steps[]? | select(.env.STEP_FILE != null and .id == null) | (.name // "(unnamed)")'
+        names.extend(line for line in _yq(query, workflow).split("\n") if line)
     return names
 
 
-def step_shells():
+def step_shells(workflow=WORKFLOW):
     """The shell every step of the workflow names, or "" for the default."""
-    return _yq('.jobs[].steps[] | (.shell // "")').splitlines()
+    return _yq('.jobs[].steps[]? | (.shell // "")', workflow).splitlines()
 
 
-def checked_out_file(job, step_id, name):
+def checked_out_file(job, step_id, name, workflow=WORKFLOW):
     """The file, in this repository, that the step's env value name gives as a path in the job's WORKFLOW_FILES."""
-    value = _yq(_step_query(job, step_id) + f' | .env.{name} // ""').strip()
-    job_files = _yq(f'.jobs.{job}.env.WORKFLOW_FILES // ""').strip()
+    value = _yq(_step_query(job, step_id) + f' | .env.{name} // ""', workflow).strip()
+    job_files = _yq(f'.jobs.{job}.env.WORKFLOW_FILES // ""', workflow).strip()
     if job_files != WORKFLOW_FILES or not value.startswith(WORKFLOW_FILES_PREFIX):
         raise LookupError(
             f"step {step_id!r} in job {job!r} has no {name} in {CHECKOUT_PATH}: {value!r}, "
@@ -154,9 +158,9 @@ def checked_out_file(job, step_id, name):
 
 
 @functools.cache
-def step_file_path(job, step_id):
+def step_file_path(job, step_id, workflow=WORKFLOW):
     """The step file, in this repository, that the step's STEP_FILE names in the workflow's checkout."""
-    return checked_out_file(job, step_id, "STEP_FILE")
+    return checked_out_file(job, step_id, "STEP_FILE", workflow)
 
 
 @contextlib.contextmanager
@@ -174,12 +178,14 @@ def step_file_copy(job, step_id, helpers_source=None):
 
 
 @functools.cache
-def step_env_names(job, step_id):
+def step_env_names(job, step_id, workflow=WORKFLOW):
     """The names in the step's env block."""
-    return frozenset(_yq(_step_query(job, step_id) + " | (.env // {}) | keys | .[]").split())
+    return frozenset(_yq(_step_query(job, step_id) + " | (.env // {}) | keys | .[]", workflow).split())
 
 
-def run_step(job, step_id, env, api_url="http://127.0.0.1:9", substitutions=None, timeout=20):
+def run_step(
+    job, step_id, env, api_url="http://127.0.0.1:9", substitutions=None, timeout=20, runner=None, workflow=WORKFLOW
+):
     """Runs the step with only the given env (plus the runner's own variables) and returns a StepResult.
 
     The step must name a step file; it runs that file, from a copy of steps/ so that the shared helper module is beside
@@ -189,12 +195,12 @@ def run_step(job, step_id, env, api_url="http://127.0.0.1:9", substitutions=None
     a step file, the code is the file and the modules beside it, such as the shared helper module. Each piece of text
     must appear exactly once in all of that code, so a test fails loudly if the code changes under it.
     """
-    undeclared = set(env) - step_env_names(job, step_id)
+    undeclared = set(env) - step_env_names(job, step_id, workflow)
     if undeclared:
         raise AssertionError(f"step {step_id!r} does not declare env {sorted(undeclared)}")
     # The step file and every module beside it, which the step may import. step_file_path raises for a step that
     # names no step file.
-    step_file = step_file_path(job, step_id)
+    step_file = step_file_path(job, step_id, workflow)
     sources = {path.name: path.read_text(encoding="utf-8") for path in step_file.parent.glob("*.py")}
     main = step_file.name
     for name, source in sources.items():
@@ -215,19 +221,19 @@ def run_step(job, step_id, env, api_url="http://127.0.0.1:9", substitutions=None
             (code / name).write_text(source, encoding="utf-8")
         return [sys.executable, str(code / main)]
 
-    return _run(command, env, api_url, timeout)
+    return _run(command, env, api_url, timeout, runner)
 
 
-def run_step_as_written(job, step_id, env, api_url="http://127.0.0.1:9", timeout=20):
+def run_step_as_written(job, step_id, env, api_url="http://127.0.0.1:9", timeout=20, runner=None, workflow=WORKFLOW):
     """Runs the step's run script exactly as the workflow writes it, with bash, and returns a StepResult.
 
     For a step whose script only starts its step file, this checks what the script does around the file, such as when
     the file was not checked out; the env gives the file's path as STEP_FILE. The file itself is tested with run_step.
     """
-    undeclared = set(env) - step_env_names(job, step_id)
+    undeclared = set(env) - step_env_names(job, step_id, workflow)
     if undeclared:
         raise AssertionError(f"step {step_id!r} does not declare env {sorted(undeclared)}")
-    script, shell = step_script(job, step_id)
+    script, shell = step_script(job, step_id, workflow)
     if shell not in ("", "bash"):
         raise AssertionError(f"step {step_id!r} uses shell {shell!r}, not bash")
     if "${{" in script:
@@ -239,11 +245,22 @@ def run_step_as_written(job, step_id, env, api_url="http://127.0.0.1:9", timeout
         # The runner's default shell for a run script.
         return ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(path)]
 
-    return _run(command, env, api_url, timeout)
+    return _run(command, env, api_url, timeout, runner)
 
 
-def _run(command, env, api_url, timeout):
-    """Runs command(temp directory) with only env plus the runner's own variables, and returns a StepResult."""
+# The runner's own variables that every step sees, as GitHub sets them for a run in cipherstash/example. A test changes
+# or adds one with run_step's or run_step_as_written's runner argument.
+RUNNER_VARIABLES = {
+    "GITHUB_REPOSITORY": "cipherstash/example",
+    "GITHUB_SERVER_URL": "https://github.com",
+    "GITHUB_RUN_ID": "1234567890",
+}
+RUN_URL = "https://github.com/cipherstash/example/actions/runs/1234567890"
+
+
+def _run(command, env, api_url, timeout, runner=None):
+    """Runs command(temp directory) with only env plus the runner's own variables, and returns a StepResult. runner
+    changes or adds runner variables, such as GITHUB_EVENT_PATH; one set to None is left out."""
     with tempfile.TemporaryDirectory() as temp_name:
         temp = pathlib.Path(temp_name)
         output_path = temp / "output"
@@ -258,10 +275,12 @@ def _run(command, env, api_url, timeout):
             "GITHUB_OUTPUT": str(output_path),
             "GITHUB_STEP_SUMMARY": str(summary_path),
             "GITHUB_API_URL": api_url,
-            "GITHUB_REPOSITORY": "cipherstash/example",
+            **RUNNER_VARIABLES,
             "RUNNER_TEMP": str(runner_temp),
+            **(runner or {}),
             **env,
         }
+        full_env = {name: value for name, value in full_env.items() if value is not None}
         # A step that fails is a result to check, not an error here.
         completed = subprocess.run(
             command(temp), env=full_env, capture_output=True, text=True, timeout=timeout, check=False
