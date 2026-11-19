@@ -3,7 +3,8 @@
 # run is fast and cheap and never starts a real review.
 #
 # When a pull request here is opened, reopened or marked ready for review, the review job calls this pull request's own
-# version of .github/workflows/claude-review.yml (a local path, not a pinned commit), with the stub's trigger id and
+# version of .github/workflows/claude-review.yml (`$/`, GitHub's form for this repository at the exact commit that is
+# running, not a pinned commit), with the stub's trigger id and
 # token. The verify job then fails if the review workflow decided not to request a review, naming the skip reason, or
 # if the request was not sent, and otherwise waits a few minutes for the stub's reply naming this run attempt.
 #
@@ -63,7 +64,7 @@ jobs:
     # even one that will not run. Only its react job uses it, for a comment command, which this test does not make.
     permissions:
       issues: write
-    uses: ./.github/workflows/claude-review.yml
+    uses: $/.github/workflows/claude-review.yml
     with:
       routine-trigger-id: ${{ vars.CLAUDE_ROUTINE_INTEGRATION_TEST_TRIGGER_ID }}
     secrets:
