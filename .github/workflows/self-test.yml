@@ -2,13 +2,17 @@
 # place of the real Claude code-review routine. The stub only posts a comment naming the request it received, so a test
 # run is fast and cheap and never starts a real review.
 #
-# When a pull request here is opened, reopened or marked ready for review, the review job calls this pull request's own
-# version of .github/workflows/claude-review.yml (a local path, not a pinned commit), with the stub's trigger id and
-# token. The verify job then fails if the review workflow decided not to request a review, naming the skip reason, or
-# if the request was not sent, and otherwise waits a few minutes for the stub's reply naming this run attempt.
+# When a pull request here is opened, reopened or marked ready for review, or a review is requested (or re-requested)
+# from the review agent, cipherstash-agent, the review job calls this pull request's own version of
+# .github/workflows/claude-review.yml (a local path, not a pinned commit), with the stub's trigger id and token. The
+# verify job then fails if the review workflow decided not to request a review, naming the skip reason, if the request
+# was of the wrong kind for the event, or if it was not sent, and otherwise waits a few minutes for the stub's reply
+# naming this run attempt.
 #
-# Drafts, pull requests from forks (which get none of this repository's secrets) and pull requests opened by bots are
-# not tested: the skipped job says why, and marking a draft ready runs the test.
+# Pull requests from forks (which get none of this repository's secrets) and pull requests opened by bots are not
+# tested, and neither are drafts when they are opened or reopened: the skipped job says why. Marking a draft ready, or
+# requesting a review from the review agent, runs the test; the review workflow takes a requested reviewer on a draft
+# too. A review requested from anyone else, or from a team, starts no job at all, not even the skipped one.
 #
 # Needs, as repository settings (never the real routine's trigger or token):
 #   secret CLAUDE_ROUTINE_INTEGRATION_TEST_TOKEN        the stub routine's bearer token
@@ -20,29 +24,33 @@ name: Self-test
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, reopened, ready_for_review, review_requested]
 
 permissions: {}
 
 jobs:
-  # Says why a pull request is not tested. Runs exactly when the review job does not.
+  # Says why a pull request is not tested. Runs exactly when the review job does not, except for a review requested
+  # from anyone but the review agent, which runs neither. The review agent's login must match the review workflow's
+  # review-agent input, which this file leaves at its default; a job's condition cannot read that input. GitHub
+  # compares strings ignoring case, as the review workflow does, and a team's request has no requested_reviewer.
   skipped:
     if: >-
-      github.event.pull_request.draft
+      (github.event.action != 'review_requested' || github.event.requested_reviewer.login == 'cipherstash-agent')
+      && ((github.event.action != 'review_requested' && github.event.pull_request.draft)
       || github.event.pull_request.head.repo.full_name != github.repository
-      || github.event.pull_request.user.type == 'Bot'
+      || github.event.pull_request.user.type == 'Bot')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
     steps:
       - name: Say why the self-test did not run
         env:
-          DRAFT: ${{ github.event.pull_request.draft }}
+          DRAFT: ${{ github.event.action != 'review_requested' && github.event.pull_request.draft }}
           FROM_THIS_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         run: |
           if [[ "$DRAFT" == true ]]; then
-            reason="the pull request is a draft; marking it ready for review runs the test"
+            reason="the pull request is a draft; marking it ready for review, or requesting a review from cipherstash-agent, runs the test"
           elif [[ "$FROM_THIS_REPOSITORY" != true ]]; then
             reason="the pull request comes from a fork, which gets none of this repository's secrets"
           elif [[ "$AUTHOR_TYPE" == Bot ]]; then
@@ -53,10 +61,12 @@ jobs:
           echo "::notice title=Self-test skipped::Not tested: $reason"
           echo "Self-test: skipped ($reason)" >>"$GITHUB_STEP_SUMMARY"
 
-  # Calls this pull request's own version of the review workflow, with the stub routine's trigger and token.
+  # Calls this pull request's own version of the review workflow, with the stub routine's trigger and token. A draft is
+  # tested only for a requested reviewer, which the review workflow takes on drafts too.
   review:
     if: >-
-      github.event.pull_request.draft == false
+      (github.event.action != 'review_requested' || github.event.requested_reviewer.login == 'cipherstash-agent')
+      && (github.event.action == 'review_requested' || github.event.pull_request.draft == false)
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.type != 'Bot'
     # The review workflow's jobs can hold no more than this, and GitHub refuses to start it if a job asks for more,
@@ -103,6 +113,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DECISION: ${{ needs.review.outputs.decision }}
           SENT: ${{ needs.review.outputs.sent }}
+          # Which event started this run, so the step can check the request was of the kind that event makes.
+          EVENT_ACTION: ${{ github.event.action }}
           # The check's file, from this pull request's checkout. Python's standard library only (3.10 features), so
           # nothing is installed; tests/test_verify.py runs this file.
           STEP_FILE: ${{ env.WORKFLOW_FILES }}/steps/verify.py

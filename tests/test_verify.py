@@ -17,11 +17,11 @@ REPLY = f"integration-test: received ready request from {RUN_URL}"
 QUICK = {"WAIT_SECONDS = 300": "WAIT_SECONDS = 1", "POLL_SECONDS = 15": "POLL_SECONDS = 0.1"}
 
 
-def fire_decision():
+def fire_decision(kind="ready"):
     return json.dumps(
         {
             "decision": "fire",
-            "kind": "ready",
+            "kind": kind,
             "requester": "cipherstash-agent",
             "pull_request": {"number": 42, "url": "https://github.com/cipherstash/example/pull/42"},
             "react": False,
@@ -45,7 +45,7 @@ def page(*comments):
 
 class VerifyTest(unittest.TestCase):
     def verify(self, routes=None, api_url=None, substitutions=None, runner=None, **overrides):
-        env = {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true"}
+        env = {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true", "EVENT_ACTION": "opened"}
         env.update(overrides)
         with StubServer(routes) as stub:
             result = run_step(
@@ -106,7 +106,7 @@ class GivenTheStubReplies(VerifyTest):
             result = run_step(
                 "verify",
                 "verify",
-                {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true"},
+                {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true", "EVENT_ACTION": "opened"},
                 api_url=stub.url,
                 substitutions={"WAIT_SECONDS = 300": "WAIT_SECONDS = 5", "POLL_SECONDS = 15": "POLL_SECONDS = 0.1"},
                 workflow=SELF_TEST,
@@ -120,6 +120,42 @@ class GivenTheStubReplies(VerifyTest):
         self.assert_passed(result)
         self.assertEqual(result.warnings(), [])
         self.assertFalse(any(line.startswith("::error") for line in result.stdout.splitlines()), result.stdout)
+
+
+class GivenEachKindOfRequest(VerifyTest):
+    def test_a_ready_request_for_a_ready_event_passes(self):
+        for action in ("opened", "reopened", "ready_for_review"):
+            with self.subTest(action=action):
+                self.assert_passed(self.verify({PAGE_1: page(comment(REPLY))}, EVENT_ACTION=action))
+
+    def test_a_requested_reviewer_request_for_a_review_requested_event_passes(self):
+        reply = f"integration-test: received requested-reviewer request from {RUN_URL}"
+        result = self.verify(
+            {PAGE_1: page(comment(reply))},
+            EVENT_ACTION="review_requested",
+            DECISION=fire_decision("requested-reviewer"),
+        )
+        self.assert_passed(result)
+
+    def test_a_request_of_another_kind_than_the_event_makes_fails_without_reading_comments(self):
+        for action, kind, expected in (
+            ("review_requested", "ready", "requested-reviewer"),
+            ("review_requested", "comment-command", "requested-reviewer"),
+            ("ready_for_review", "requested-reviewer", "ready"),
+            ("opened", None, "ready"),
+        ):
+            with self.subTest(action=action, kind=kind):
+                result = self.verify(EVENT_ACTION=action, DECISION=fire_decision(kind))
+                self.assert_failed(result, f"a {action} event makes a {expected} request")
+                self.assertIn(f"({kind})", result.errors()[0])
+                self.assertEqual(self.stub.requests, [])
+
+    def test_an_event_the_self_test_does_not_run_on_fails_without_reading_comments(self):
+        for action in ("", "synchronize", "review_request_removed"):
+            with self.subTest(action=action):
+                result = self.verify(EVENT_ACTION=action)
+                self.assert_failed(result, "does not test")
+                self.assertEqual(self.stub.requests, [])
 
 
 class GivenTheSummaryCannotBeWritten(VerifyTest):
@@ -264,7 +300,7 @@ class GivenTheRunIsNotKnown(VerifyTest):
                     result = run_step(
                         "verify",
                         "verify",
-                        {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true"},
+                        {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true", "EVENT_ACTION": "opened"},
                         api_url=stub.url,
                         substitutions=QUICK,
                         runner={name: None},

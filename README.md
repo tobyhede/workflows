@@ -243,20 +243,22 @@ The stub only posts a comment saying it received the request, so a test run is f
 
 ### What it does
 
-[`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) runs when a pull request in this repository is opened, reopened or marked ready for review.
+[`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) runs when a pull request in this repository is opened, reopened or marked ready for review, and when someone requests a review from the review agent, `cipherstash-agent`, on a pull request here.
 
 1. The `review` job calls the pull request's own version of `.github/workflows/claude-review.yml`, by its local path, so the version under test is the one in the pull request. It passes the stub routine's trigger id and token, never the real routine's.
-2. The review workflow decides, as it would for any repository. If it decides to request a review, it sends the request to the stub. The request text includes a link to this run attempt, `<server>/<repo>/actions/runs/<id>/attempts/<n>`.
+2. The review workflow decides, as it would for any repository. For a review requested from `cipherstash-agent`, the person who requested it must be a member of the `@cipherstash/developers` team, as for any requested reviewer. If it decides to request a review, it sends the request to the stub. The request text includes a link to this run attempt, `<server>/<repo>/actions/runs/<id>/attempts/<n>`.
 3. The stub posts a comment on the pull request, echoing the attempt's link.
-4. The `verify` job checks the review workflow's decision. If it decided to request a review and sent the request, the job reads the pull request's comments every 15 seconds, for up to 5 minutes, until it finds a comment that contains `integration-test: received` and this attempt's link. Only a comment whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR` counts, so someone else cannot pass the test by posting the marker on a public pull request. It then shows the reply, and its author, in a notice and in the run's summary.
+4. The `verify` job checks the review workflow's decision. The request must be a Ready request when the pull request was opened, reopened or marked ready, and a requested-reviewer request when a review was requested. If it decided to request a review of the right kind and sent the request, the job reads the pull request's comments every 15 seconds, for up to 5 minutes, until it finds a comment that contains `integration-test: received` and this attempt's link. Only a comment whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR` counts, so someone else cannot pass the test by posting the marker on a public pull request. It then shows the reply, and its author, in a notice and in the run's summary.
 
 The test is skipped, and the `skipped` job says why in a notice, for:
 
-- drafts. Marking the draft ready for review runs the test.
+- drafts, when they are opened or reopened. Marking the draft ready for review, or requesting a review from `cipherstash-agent`, runs the test. The review workflow takes a requested reviewer on a draft, so the test does too.
 - pull requests from forks. GitHub gives them none of this repository's secrets, so the stub could not be called.
 - pull requests opened by bots, such as Dependabot. They get none of this repository's secrets either, and the review workflow skips their Ready requests.
 
-The test covers Ready requests only. Requested reviewers and comment commands are not tested yet.
+A review requested from anyone other than `cipherstash-agent`, or from a team, starts no self-test job at all, not even the `skipped` job, so ordinary review requests add nothing to the pull request's checks.
+
+The test covers Ready and requested-reviewer requests. Comment commands are not tested yet.
 
 ### Settings
 
@@ -269,6 +271,7 @@ The test covers Ready requests only. Requested reviewers and comment commands ar
 Pull requests here are usually opened by the review agent, `cipherstash-agent`, whose Ready requests need no membership check, so the test works without the App's secrets.
 A pull request opened by anyone else needs the membership check.
 It is not yet known whether the organisation's App secrets reach this repository. If they do not, such a pull request fails the test with the reason `membership-lookup-failed`.
+A review requested from `cipherstash-agent` always needs the membership check, for the person who requested it.
 
 The stub routine's prompt is:
 
@@ -281,6 +284,8 @@ Post a comment on the pull request in this request: `integration-test: received 
 The `verify` job fails with one error that says what went wrong:
 
 - `The review workflow decided not to request a review (<reason>)`: the review workflow skipped the request. The reason is one of the [reasons for skipping](#reasons-for-skipping). The `review / decide` job's summary and errors say more. For example, `membership-lookup-failed` means the membership check could not be made.
+- `The review workflow decided to request a review of the wrong kind (<kind>)`: the decision does not match the event, for example a Ready request when a review was requested. Look at the `review / decide` job.
+- `The self-test does not test a pull_request event with the action ...`: the run was started by an event the test does not run on. The workflow's `on:` list and the `verify` step disagree.
 - `The review workflow gave no decision to request a review`: the review workflow did not finish its decision. Look at its `decide` job.
 - `... but the request was not sent to the stub routine`: the stub's trigger refused the request or could not be reached. The `review / fire` job's error says why. Check the token secret and the trigger id variable. If the `fire` job was cancelled, a newer request (a newer push or event for the same pull request) may have replaced it.
 - `GitHub answered HTTP 401, 403 or 404 when asked for the pull request's comments`: retrying cannot fix it, so the job fails at once. Check the job's token and permissions.
@@ -288,7 +293,20 @@ The `verify` job fails with one error that says what went wrong:
 
 Each attempt looks only for a reply that names its own attempt's link, so a reply to an earlier run or an earlier attempt never counts.
 
-Pushing new commits does not run the self-test again. To test new commits, mark the pull request as a draft and then as ready for review again.
+### Running the test again
+
+Pushing new commits does not run the self-test again. To test a pull request's latest commit:
+
+- Request a review from `cipherstash-agent` in the pull request's Reviewers box. If it was requested before, use the re-request button next to its name. This works on drafts too.
+- Or mark the pull request as a draft, and then as ready for review again.
+
+GitHub does not let you request a review from a pull request's own author.
+So requesting `cipherstash-agent` works only on pull requests that `cipherstash-agent` did not open, and most pull requests here are opened by it.
+For those, mark the pull request as a draft and then as ready for review.
+
+A requested-reviewer request needs the membership check, because the person who requested the review must be a team member.
+If the App's secrets do not reach this repository, it fails with the reason `membership-lookup-failed` (see [Settings](#settings)).
+
 "Re-run all jobs" tests the same commit again, and gets a new attempt, with a new attempt link.
 
 ## Checks
