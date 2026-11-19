@@ -1,17 +1,21 @@
-"""The self-test's verify step: checks that the review workflow requested a review from the stub routine, then waits for
-the stub's reply on the pull request.
+"""The self-test's verify step: checks that the review workflow requested a review from the stub routine, then, for a
+comment command, that the comment got the review workflow's 👀 reaction, then waits for the stub's reply on the pull
+request.
 
 Passes only when a comment on the pull request, by the stub routine's account (REPLY_AUTHOR), contains the marker
 `integration-test: received` and this run attempt's link (`<server>/<repo>/actions/runs/<id>/attempts/<n>`), which the
-review request includes and the stub echoes back. Fails with one error annotation that says what went wrong: no
-account to expect, the review workflow decided not to request a review (naming the skip reason), the request was not
-of the kind the event makes, the request was not sent, or no reply came within WAIT_SECONDS (saying how many comments
-were read and how many carried the marker and this attempt's link but came from another author).
+review request includes and the stub echoes back. For a comment command, the comment that started the run (COMMENT_ID)
+must also have an `eyes` reaction by REACTION_AUTHOR within REACTION_WAIT_SECONDS. Fails with one error annotation that
+says what went wrong: no account to expect, the review workflow decided not to request a review (naming the skip
+reason), the request was not of the kind the event makes, the request was not sent, the decision is not for the comment
+that started the run, no 👀 reaction came in time, or no reply came within WAIT_SECONDS (saying how many comments were
+read and how many carried the marker and this attempt's link but came from another author).
 
-Inputs, all environment variables: DECISION and SENT (the review workflow's outputs), EVENT_ACTION (the action of the
-pull_request event that started the run), REPLY_AUTHOR (the login the stub routine posts as), GITHUB_TOKEN (the job's
-token, which only reads comments) and the runner's GITHUB_API_URL, GITHUB_REPOSITORY, GITHUB_SERVER_URL, GITHUB_RUN_ID,
-GITHUB_RUN_ATTEMPT, GITHUB_OUTPUT and GITHUB_STEP_SUMMARY.
+Inputs, all environment variables: DECISION and SENT (the review workflow's outputs), EVENT_NAME and EVENT_ACTION (the
+event that started the run), COMMENT_ID (the id of the comment that started a comment command's run), REPLY_AUTHOR (the
+login the stub routine posts as), REACTION_AUTHOR (the login the review workflow's react job reacts as), GITHUB_TOKEN
+(the job's token, which only reads comments and reactions) and the runner's GITHUB_API_URL, GITHUB_REPOSITORY,
+GITHUB_SERVER_URL, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_OUTPUT and GITHUB_STEP_SUMMARY.
 Python's standard library only (3.10 features); tests/test_verify.py runs this file.
 """
 
@@ -28,9 +32,15 @@ from helpers import Unreachable, error, escaped, github_headers, send, warning
 # How long to wait for the stub's reply in all, and between two reads of the comments, in seconds.
 WAIT_SECONDS = 300
 POLL_SECONDS = 15
+# How long to wait for a comment command's 👀 reaction in all, and between two reads of the reactions, in seconds. The
+# review workflow's react job has finished before this step starts, so the reaction is normally there at once.
+REACTION_WAIT_SECONDS = 60
+REACTION_POLL_SECONDS = 5
+# The reaction the review workflow's react job adds, as GitHub's reactions API names it.
+REACTION = "eyes"
 # The text the stub's reply starts with, as its prompt asks.
 MARKER = "integration-test: received"
-# Comments are read 100 to a page; this many pages is the most read each time.
+# Comments and reactions are read 100 to a page; this many pages is the most read each time.
 PAGE_SIZE = 100
 MAX_PAGES = 30
 # The most of a page's body that is read. A larger answer is not read as a page.
@@ -38,12 +48,15 @@ MAX_BODY_BYTES = 8 * 1024 * 1024
 
 # A run attempt's link, as the review workflow's decide job writes it and the request decision accepts it.
 RUN_URL = re.compile(r"https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/attempts/[0-9]+")
-# The kind of review request each pull_request event the self-test runs on makes.
+# A comment's id, which goes into a URL, so anything but ASCII digits is refused.
+COMMENT_ID = re.compile(r"[0-9]+")
+# The kind of review request each event the self-test runs on makes, by the event's name and action.
 KINDS = {
-    "opened": "ready",
-    "reopened": "ready",
-    "ready_for_review": "ready",
-    "review_requested": "requested-reviewer",
+    ("pull_request", "opened"): "ready",
+    ("pull_request", "reopened"): "ready",
+    ("pull_request", "ready_for_review"): "ready",
+    ("pull_request", "review_requested"): "requested-reviewer",
+    ("issue_comment", "created"): "comment-command",
 }
 # HTTP statuses that reading the comments again cannot fix: the token or the pull request is wrong.
 REFUSED = (401, 403, 404)
@@ -54,7 +67,7 @@ class Failed(Exception):
 
 
 class Unread(Exception):
-    """The comments could not be read this time; the message says why."""
+    """The comments or reactions could not be read this time; the message says why."""
 
 
 class Tally:
@@ -91,12 +104,24 @@ def run_url() -> str:
     return url
 
 
-def requested_pull_request(decision: str, sent: str, action: str) -> int:
-    """The number of the pull request a review was requested for, or Failed if none was, or it was not the kind of
-    request the event makes."""
-    expected = KINDS.get(action)
+def reaction_author() -> str:
+    """The login the review workflow's react job adds the 👀 reaction as. Anyone can react to a comment, so a 👀 from
+    another account is not the review workflow's; an empty login would accept everyone, so it is an error."""
+    login = os.environ.get("REACTION_AUTHOR", "").strip()
+    if not login:
+        raise Failed(
+            "REACTION_AUTHOR is empty or missing, so there is no account whose 👀 reaction to accept: "
+            "set it to the login the review workflow's react job reacts as in the self-test workflow"
+        )
+    return login
+
+
+def requested(decision: str, sent: str, name: str, action: str) -> tuple[int, dict[str, Any]]:
+    """The number of the pull request a review was requested for, and the decision, or Failed if none was, or it was
+    not the kind of request the event makes."""
+    expected = KINDS.get((name, action))
     if expected is None:
-        raise Failed(f"The self-test does not test a pull_request event with the action {action!r}")
+        raise Failed(f"The self-test does not test a {name or '(missing)'} event with the action {action!r}")
     try:
         value: Any = json.loads(decision)
     except ValueError:
@@ -122,11 +147,30 @@ def requested_pull_request(decision: str, sent: str, action: str) -> int:
     number = pull_request.get("number") if isinstance(pull_request, dict) else None
     if not isinstance(number, int) or isinstance(number, bool) or number < 1:
         raise Failed("The review workflow's decision has no pull request number, so its comments cannot be read")
-    return number
+    return number, value
 
 
-def comments_page(token: str, number: int, page: int) -> list[Any]:
-    path = f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/{number}/comments?per_page={PAGE_SIZE}&page={page}"
+def triggering_comment(decision: dict[str, Any]) -> str:
+    """The id of the comment that started this run, as digits, or Failed if it is not known or the decision is about
+    another comment."""
+    comment = os.environ.get("COMMENT_ID", "")
+    if not COMMENT_ID.fullmatch(comment):
+        raise Failed(
+            "COMMENT_ID is empty or not a number, so the comment whose 👀 reaction to check is not known: "
+            "set it to the id of the comment that started the run in the self-test workflow"
+        )
+    value = decision.get("comment_id")
+    if isinstance(value, bool) or not isinstance(value, int) or str(value) != comment:
+        raise Failed(
+            f"The review workflow's decision is for comment {value!r}, not the comment that started this run "
+            f"({comment}): see its decide job"
+        )
+    return comment
+
+
+def listing_page(token: str, path: str, what: str, noun: str) -> list[Any]:
+    """One page of a GitHub listing at path, such as a pull request's comments. what names the listing in messages,
+    and noun its items."""
     # The URL starts with the runner's GITHUB_API_URL, which no input can change.
     request = urllib.request.Request(  # noqa: S310
         f"{os.environ['GITHUB_API_URL']}/{path}", headers=github_headers(token)
@@ -134,18 +178,92 @@ def comments_page(token: str, number: int, page: int) -> list[Any]:
     try:
         status, body = send(request, read_ok_bytes=MAX_BODY_BYTES + 1)
     except Unreachable as failure:
-        raise Unread(f"Could not reach GitHub to read the pull request's comments ({failure.kind})") from None
+        raise Unread(f"Could not reach GitHub to read {what} ({failure.kind})") from None
     if status in REFUSED:
-        raise Failed(f"GitHub answered HTTP {status} when asked for the pull request's comments: check the job's token")
+        raise Failed(f"GitHub answered HTTP {status} when asked for {what}: check the job's token")
     if status != 200:
-        raise Unread(f"GitHub answered HTTP {status} when asked for the pull request's comments")
+        raise Unread(f"GitHub answered HTTP {status} when asked for {what}")
     try:
-        comments = json.loads(body) if len(body) <= MAX_BODY_BYTES else None
+        items = json.loads(body) if len(body) <= MAX_BODY_BYTES else None
     except ValueError:
-        comments = None
-    if not isinstance(comments, list):
-        raise Unread("GitHub's answer was not a page of comments")
-    return comments
+        items = None
+    if not isinstance(items, list):
+        raise Unread(f"GitHub's answer was not a page of {noun}")
+    return items
+
+
+def comments_page(token: str, number: int, page: int) -> list[Any]:
+    path = f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/{number}/comments?per_page={PAGE_SIZE}&page={page}"
+    return listing_page(token, path, "the pull request's comments", "comments")
+
+
+def reactions_page(token: str, comment: str, page: int) -> list[Any]:
+    # Only the 👀 reactions, so a comment with many other reactions needs no more pages.
+    path = (
+        f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/comments/{comment}/reactions"
+        f"?content={REACTION}&per_page={PAGE_SIZE}&page={page}"
+    )
+    return listing_page(token, path, "the comment's reactions", "reactions")
+
+
+def find_reaction(token: str, comment: str, author: str, deadline: float, others: set[Any]) -> dict[str, Any] | None:
+    """The first 👀 reaction on the comment by `author` (compared without regard to case). A 👀 by anyone else is
+    counted in others, by its id. Stops looking at the deadline, even part way through the pages."""
+    for page in range(1, MAX_PAGES + 1):
+        reactions = reactions_page(token, comment, page)
+        for found in reactions:
+            if not isinstance(found, dict) or found.get("content") != REACTION:
+                continue
+            user = found.get("user")
+            login = user.get("login") if isinstance(user, dict) else None
+            if isinstance(login, str) and login.casefold() == author.casefold():
+                return found
+            others.add(found.get("id", len(others)))
+        if len(reactions) < PAGE_SIZE or time.monotonic() >= deadline:
+            break
+    return None
+
+
+def wait_for_reaction(token: str, comment: str, author: str) -> dict[str, Any]:
+    deadline = time.monotonic() + REACTION_WAIT_SECONDS
+    others: set[Any] = set()
+    problem = ""
+    while True:
+        try:
+            found = find_reaction(token, comment, author, deadline, others)
+            problem = ""
+        except Unread as failure:
+            found = None
+            problem = str(failure)
+        if found is not None:
+            return found
+        if time.monotonic() + REACTION_POLL_SECONDS > deadline:
+            break
+        time.sleep(REACTION_POLL_SECONDS)
+    message = (
+        f"No 👀 reaction from @{author} on comment {comment} within {REACTION_WAIT_SECONDS:g} seconds, so the review "
+        f"workflow did not acknowledge the comment command: see the warning in its react job. Of the comment's 👀 "
+        f"reactions, {len(others)} from other accounts were not counted"
+    )
+    if problem:
+        message += f". The last read of the reactions failed: {problem}"
+    raise Failed(message)
+
+
+def report_reaction(found: dict[str, Any], comment: str) -> None:
+    user = found.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    who = f"@{login}" if isinstance(login, str) else "an unknown account"
+    text = f"The comment command, comment {comment}, has the 👀 reaction from {who}"
+    print(f"::notice title=Comment command reacted to::{escaped(text)}", flush=True)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as file:
+                # The login is GitHub's, from the reaction, and goes in code formatting so it cannot add Markdown.
+                file.write(f"Self-test: the comment command, comment {comment}, has the 👀 reaction from `{who}`.\n\n")
+        except OSError as failure:
+            warning(f"Could not write the job summary ({type(failure).__name__})")
 
 
 def find_reply(
@@ -240,10 +358,17 @@ def report(reply: dict[str, Any]) -> None:
 try:
     author = reply_author()
     url = run_url()
-    number = requested_pull_request(
-        os.environ.get("DECISION", ""), os.environ.get("SENT", ""), os.environ.get("EVENT_ACTION", "")
+    number, decision = requested(
+        os.environ.get("DECISION", ""),
+        os.environ.get("SENT", ""),
+        os.environ.get("EVENT_NAME", ""),
+        os.environ.get("EVENT_ACTION", ""),
     )
-    report(wait_for_reply(os.environ.get("GITHUB_TOKEN", ""), number, url, author))
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if decision.get("kind") == "comment-command":
+        comment = triggering_comment(decision)
+        report_reaction(wait_for_reaction(token, comment, reaction_author()), comment)
+    report(wait_for_reply(token, number, url, author))
 except Failed as failure:
     error(str(failure))
     sys.exit(1)

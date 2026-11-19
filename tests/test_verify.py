@@ -13,9 +13,32 @@ COMMENTS_PATH = "/repos/cipherstash/example/issues/42/comments?per_page=100&page
 PAGE_1 = COMMENTS_PATH.format(page=1)
 PAGE_2 = COMMENTS_PATH.format(page=2)
 STUB_LOGIN = "cipherstash-agent"
+REACTION_LOGIN = "github-actions[bot]"
+COMMENT_ID = 2500000001
+REACTIONS_PATH = (
+    f"/repos/cipherstash/example/issues/comments/{COMMENT_ID}/reactions?content=eyes&per_page=100&page={{page}}"
+)
+REACTIONS_1 = REACTIONS_PATH.format(page=1)
 REPLY = f"integration-test: received ready request from {RUN_URL}"
-# Short waits, so a test that waits for a reply that never comes ends quickly.
-QUICK = {"WAIT_SECONDS = 300": "WAIT_SECONDS = 1", "POLL_SECONDS = 15": "POLL_SECONDS = 0.1"}
+COMMAND_REPLY = f"integration-test: received comment-command request from {RUN_URL}"
+# Short waits, so a test that waits for a reply or a reaction that never comes ends quickly.
+QUICK = {
+    "WAIT_SECONDS = 300": "WAIT_SECONDS = 1",
+    "POLL_SECONDS = 15": "POLL_SECONDS = 0.1",
+    "REACTION_WAIT_SECONDS = 60": "REACTION_WAIT_SECONDS = 0.5",
+    "REACTION_POLL_SECONDS = 5": "REACTION_POLL_SECONDS = 0.1",
+}
+# The env every pull_request event's run gives the step.
+PULL_REQUEST_ENV = {
+    "GITHUB_TOKEN": TOKEN,
+    "DECISION": "",
+    "SENT": "true",
+    "EVENT_NAME": "pull_request",
+    "EVENT_ACTION": "opened",
+    "COMMENT_ID": "",
+    "REPLY_AUTHOR": STUB_LOGIN,
+    "REACTION_AUTHOR": REACTION_LOGIN,
+}
 
 
 def fire_decision(kind="ready"):
@@ -29,6 +52,25 @@ def fire_decision(kind="ready"):
             "text": f"Review pull request #42 in cipherstash/example\n\nSent by workflow run: {RUN_URL}",
         }
     )
+
+
+def command_decision(comment_id=COMMENT_ID, kind="comment-command"):
+    return json.dumps(
+        {
+            "decision": "fire",
+            "kind": kind,
+            "requester": "octocat",
+            "pull_request": {"number": 42, "url": "https://github.com/cipherstash/example/pull/42"},
+            "comment_id": comment_id,
+            "instructions": None,
+            "react": True,
+            "text": f"Review pull request #42 in cipherstash/example\n\nSent by workflow run: {RUN_URL}",
+        }
+    )
+
+
+def reaction(login=REACTION_LOGIN, content="eyes", number=1):
+    return {"id": number, "content": content, "user": {"login": login, "type": "Bot"}}
 
 
 def comment(body, login=STUB_LOGIN, number=1, association="MEMBER"):
@@ -46,13 +88,7 @@ def page(*comments):
 
 class VerifyTest(unittest.TestCase):
     def verify(self, routes=None, api_url=None, substitutions=None, runner=None, **overrides):
-        env = {
-            "GITHUB_TOKEN": TOKEN,
-            "DECISION": fire_decision(),
-            "SENT": "true",
-            "EVENT_ACTION": "opened",
-            "REPLY_AUTHOR": STUB_LOGIN,
-        }
+        env = {**PULL_REQUEST_ENV, "DECISION": fire_decision()}
         env.update(overrides)
         with StubServer(routes) as stub:
             result = run_step(
@@ -113,15 +149,9 @@ class GivenTheStubReplies(VerifyTest):
             result = run_step(
                 "verify",
                 "verify",
-                {
-                    "GITHUB_TOKEN": TOKEN,
-                    "DECISION": fire_decision(),
-                    "SENT": "true",
-                    "EVENT_ACTION": "opened",
-                    "REPLY_AUTHOR": STUB_LOGIN,
-                },
+                {**PULL_REQUEST_ENV, "DECISION": fire_decision()},
                 api_url=stub.url,
-                substitutions={"WAIT_SECONDS = 300": "WAIT_SECONDS = 5", "POLL_SECONDS = 15": "POLL_SECONDS = 0.1"},
+                substitutions={**QUICK, "WAIT_SECONDS = 300": "WAIT_SECONDS = 5"},
                 workflow=SELF_TEST,
             )
         self.assert_passed(result)
@@ -164,11 +194,220 @@ class GivenEachKindOfRequest(VerifyTest):
                 self.assertEqual(self.stub.requests, [])
 
     def test_an_event_the_self_test_does_not_run_on_fails_without_reading_comments(self):
-        for action in ("", "synchronize", "review_request_removed"):
-            with self.subTest(action=action):
-                result = self.verify(EVENT_ACTION=action)
-                self.assert_failed(result, "does not test")
+        for name, action in (
+            ("pull_request", ""),
+            ("pull_request", "synchronize"),
+            ("pull_request", "review_request_removed"),
+            ("pull_request", "created"),
+            ("issue_comment", "edited"),
+            ("issue_comment", "opened"),
+            ("", "opened"),
+            ("push", "opened"),
+        ):
+            with self.subTest(name=name, action=action):
+                result = self.verify(EVENT_NAME=name, EVENT_ACTION=action)
+                self.assert_failed(result, f"does not test a {name or '(missing)'} event with the action {action!r}")
                 self.assertEqual(self.stub.requests, [])
+
+    def test_a_comment_command_for_a_pull_request_event_fails_without_reading_comments(self):
+        result = self.verify(DECISION=command_decision())
+        self.assert_failed(result, "a opened event makes a ready request")
+        self.assertEqual(self.stub.requests, [])
+
+
+class GivenACommentCommand(VerifyTest):
+    """A run started by a comment command: the decision must be a comment command for that comment, the comment must
+    have the review workflow's 👀 reaction, and the stub must reply naming this run attempt."""
+
+    def verify_command(self, routes=None, **overrides):
+        env = {
+            "DECISION": command_decision(),
+            "EVENT_NAME": "issue_comment",
+            "EVENT_ACTION": "created",
+            "COMMENT_ID": str(COMMENT_ID),
+        }
+        return self.verify(routes, **{**env, **overrides})
+
+    def reacted_and_replied(self, *reactions):
+        return {
+            REACTIONS_1: page(*(reactions or (reaction(),))),
+            PAGE_1: page(comment("@cipherstash-agent review", login="octocat"), comment(COMMAND_REPLY, number=2)),
+        }
+
+    def test_a_reaction_and_a_reply_pass_and_both_are_shown(self):
+        result = self.verify_command(self.reacted_and_replied())
+        self.assert_passed(result)
+        self.assertIn("Stub routine replied", result.stdout)
+        self.assertIn(COMMAND_REPLY, result.stdout)
+        notices = [line for line in result.stdout.splitlines() if "Comment command reacted to" in line]
+        self.assertEqual(len(notices), 1, result.stdout)
+        self.assertIn(f"@{REACTION_LOGIN}", notices[0])
+        self.assertIn(str(COMMENT_ID), notices[0])
+        self.assertIn("reaction", result.summary)
+
+    def test_the_reaction_is_read_first_with_the_jobs_token_then_the_comments(self):
+        self.verify_command(self.reacted_and_replied())
+        self.assertEqual(self.stub.paths()[:2], [REACTIONS_1, PAGE_1])
+        method, _, headers = self.stub.requests[0]
+        self.assertEqual(method, "GET")
+        self.assertEqual(headers.get("Authorization"), f"Bearer {TOKEN}")
+
+    def test_the_reactions_author_is_compared_without_regard_to_case(self):
+        routes = self.reacted_and_replied(reaction(login="GitHub-Actions[bot]"))
+        self.assert_passed(self.verify_command(routes))
+
+    def test_a_reaction_among_others_is_found(self):
+        routes = self.reacted_and_replied(
+            reaction(login="octocat"), reaction(content="+1", number=2), reaction(number=3)
+        )
+        self.assert_passed(self.verify_command(routes))
+
+    def test_a_reaction_on_a_later_page_is_found(self):
+        others = [reaction(login=f"person{n}", number=n) for n in range(100)]
+        routes = {
+            REACTIONS_1: page(*others),
+            REACTIONS_PATH.format(page=2): page(reaction()),
+            PAGE_1: page(comment(COMMAND_REPLY)),
+        }
+        self.assert_passed(self.verify_command(routes))
+
+    def test_a_reaction_that_arrives_while_waiting_is_found(self):
+        routes = {REACTIONS_1: page(), PAGE_1: page(comment(COMMAND_REPLY))}
+
+        def react_later():
+            time.sleep(0.2)
+            routes[REACTIONS_1] = page(reaction())
+
+        with StubServer(routes) as stub:
+            threading.Thread(target=react_later, daemon=True).start()
+            # The stub's routes are this dictionary, so the reaction appears once react_later adds it.
+            stub.routes = routes
+            result = run_step(
+                "verify",
+                "verify",
+                {
+                    **PULL_REQUEST_ENV,
+                    "DECISION": command_decision(),
+                    "EVENT_NAME": "issue_comment",
+                    "EVENT_ACTION": "created",
+                    "COMMENT_ID": str(COMMENT_ID),
+                },
+                api_url=stub.url,
+                substitutions={**QUICK, "REACTION_WAIT_SECONDS = 60": "REACTION_WAIT_SECONDS = 5"},
+                workflow=SELF_TEST,
+            )
+        self.assert_passed(result)
+        self.assertGreater(stub.paths().count(REACTIONS_1), 1)
+
+    def test_no_reaction_in_time_fails_naming_the_comment_without_reading_comments(self):
+        started = time.monotonic()
+        result = self.verify_command({REACTIONS_1: page(), PAGE_1: page(comment(COMMAND_REPLY))})
+        self.assert_failed(result, f"No 👀 reaction from @{REACTION_LOGIN} on comment {COMMENT_ID}")
+        self.assertIn("react job", result.errors()[0])
+        self.assertNotIn(PAGE_1, self.stub.paths())
+        self.assertGreater(len(self.stub.requests), 1, "the step did not keep trying")
+        self.assertLess(time.monotonic() - started, 5, "the step waited past its time")
+
+    def test_a_reaction_by_anyone_else_or_of_another_kind_does_not_count(self):
+        for found in (
+            reaction(login="octocat"),
+            reaction(login="github-actions"),
+            reaction(login="github-actions[bot]2"),
+            reaction(content="+1"),
+            reaction(content="EYES"),
+            {"id": 1, "content": "eyes", "user": None},
+            {"id": 1, "content": "eyes"},
+            "eyes",
+        ):
+            with self.subTest(found=found):
+                result = self.verify_command({REACTIONS_1: page(found), PAGE_1: page(comment(COMMAND_REPLY))})
+                self.assert_failed(result, "No 👀 reaction")
+
+    def test_the_timeout_says_how_many_eyes_reactions_from_others_were_seen(self):
+        result = self.verify_command({REACTIONS_1: page(reaction(login="octocat"), reaction(login="other", number=2))})
+        self.assert_failed(result, "No 👀 reaction")
+        self.assertIn("2 from other accounts", result.errors()[0])
+
+    def test_a_reaction_without_the_stubs_reply_fails_as_no_reply(self):
+        result = self.verify_command({REACTIONS_1: page(reaction()), PAGE_1: page(comment("Thanks"))})
+        self.assert_failed(result, "No reply from the stub routine")
+        self.assertIn("Comment command reacted to", result.stdout)
+
+    def test_github_errors_reading_reactions_are_retried_and_named(self):
+        for status in (500, 429, 502):
+            with self.subTest(status=status):
+                result = self.verify_command({REACTIONS_1: (status, "{}")})
+                self.assert_failed(result, "No 👀 reaction")
+                self.assertIn(f"HTTP {status}", result.errors()[0])
+                self.assertGreater(len(self.stub.requests), 1)
+
+    def test_a_refusal_reading_reactions_fails_at_once(self):
+        for status in (401, 403, 404):
+            with self.subTest(status=status):
+                result = self.verify_command({REACTIONS_1: (status, "{}")})
+                self.assert_failed(result, f"HTTP {status} when asked for the comment's reactions")
+                self.assertEqual(len(self.stub.requests), 1, "the step retried a refusal")
+
+    def test_an_answer_that_is_not_a_list_of_reactions_is_retried(self):
+        result = self.verify_command({REACTIONS_1: (200, "{}")})
+        self.assert_failed(result, "No 👀 reaction")
+        self.assertIn("not a page of reactions", result.errors()[0])
+
+    def test_an_unreachable_api_is_named(self):
+        result = self.verify_command(api_url=closed_port_url())
+        self.assert_failed(result, "No 👀 reaction")
+        self.assertIn("Could not reach GitHub", result.errors()[0])
+
+    def test_a_decision_for_another_comment_fails_without_reading_anything(self):
+        for comment_id in (COMMENT_ID + 1, None, "2500000001/../1", True, -1):
+            with self.subTest(comment_id=comment_id):
+                result = self.verify_command(self.reacted_and_replied(), DECISION=command_decision(comment_id))
+                self.assert_failed(result, "not the comment that started this run")
+                self.assertEqual(self.stub.requests, [])
+
+    def test_a_missing_or_broken_comment_id_fails_without_reading_anything(self):
+        for value in ("", None, "abc", "12/../3", " 2500000001"):
+            with self.subTest(value=value):
+                result = self.verify_command(self.reacted_and_replied(), COMMENT_ID=value)
+                self.assert_failed(result, "COMMENT_ID")
+                self.assertEqual(self.stub.requests, [])
+
+    def test_a_missing_or_empty_reaction_author_fails_without_reading_anything(self):
+        for value in ("", "  ", None):
+            with self.subTest(value=value):
+                result = self.verify_command(self.reacted_and_replied(), REACTION_AUTHOR=value)
+                self.assert_failed(result, "REACTION_AUTHOR")
+                self.assertEqual(self.stub.requests, [])
+
+    def test_a_request_of_another_kind_for_a_comment_fails_without_reading_anything(self):
+        for kind in ("ready", "requested-reviewer"):
+            with self.subTest(kind=kind):
+                result = self.verify_command(DECISION=command_decision(kind=kind))
+                self.assert_failed(result, "a created event makes a comment-command request")
+                self.assertEqual(self.stub.requests, [])
+
+    def test_a_skipped_comment_command_fails_naming_the_reason(self):
+        result = self.verify_command(DECISION=json.dumps({"decision": "skip", "reason": "not-a-team-member"}))
+        self.assert_failed(result, "decided not to request a review (not-a-team-member)")
+
+    def test_a_request_that_was_not_sent_fails_before_the_reaction_is_read(self):
+        result = self.verify_command(self.reacted_and_replied(), SENT="false")
+        self.assert_failed(result, "the request was not sent to the stub routine")
+        self.assertEqual(self.stub.requests, [])
+
+    def test_a_reaction_author_with_a_workflow_command_in_it_cannot_add_an_annotation(self):
+        routes = {REACTIONS_1: page(reaction(login="x\n::error::injected")), PAGE_1: page(comment(COMMAND_REPLY))}
+        result = self.verify_command(routes)
+        self.assertEqual(len(result.errors()), 1, result.stdout)
+        self.assertFalse(any(line.startswith("::error::injected") for line in result.stdout.splitlines()))
+
+
+class GivenThePullRequestEventHasNoComment(VerifyTest):
+    def test_no_reaction_is_read_for_a_ready_or_requested_reviewer_request(self):
+        result = self.verify({PAGE_1: page(comment(REPLY))})
+        self.assert_passed(result)
+        self.assertEqual(self.stub.paths(), [PAGE_1])
+        self.assertNotIn("reacted", result.stdout)
 
 
 class GivenTheSummaryCannotBeWritten(VerifyTest):
@@ -391,13 +630,7 @@ class GivenTheRunIsNotKnown(VerifyTest):
                     result = run_step(
                         "verify",
                         "verify",
-                        {
-                            "GITHUB_TOKEN": TOKEN,
-                            "DECISION": fire_decision(),
-                            "SENT": "true",
-                            "EVENT_ACTION": "opened",
-                            "REPLY_AUTHOR": STUB_LOGIN,
-                        },
+                        {**PULL_REQUEST_ENV, "DECISION": fire_decision()},
                         api_url=stub.url,
                         substitutions=QUICK,
                         runner={name: None},
