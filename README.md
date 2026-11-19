@@ -243,7 +243,7 @@ The stub only posts a comment saying it received the request, so a test run is f
 
 ### What it does
 
-[`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) runs when a pull request in this repository is opened, reopened or marked ready for review, and when someone requests a review from the review agent, `cipherstash-agent`, on a pull request here.
+[`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) runs when a pull request in this repository is opened, reopened or marked ready for review, when someone requests a review from the review agent, `cipherstash-agent`, on a pull request here, and when a team member posts a comment command on a pull request here (see [Comment commands](#comment-commands)).
 
 1. The `review` job calls the pull request's own version of `.github/workflows/claude-review.yml`, by its local path, so the version under test is the one in the pull request. It passes the stub routine's trigger id and token, never the real routine's.
 2. The review workflow decides, as it would for any repository. For a review requested from `cipherstash-agent`, the person who requested it must be a member of the `@cipherstash/developers` team, as for any requested reviewer. If it decides to request a review, it sends the request to the stub. The request text includes a link to this run attempt, `<server>/<repo>/actions/runs/<id>/attempts/<n>`.
@@ -258,7 +258,35 @@ The test is skipped, and the `skipped` job says why in a notice, for:
 
 A review requested from anyone other than `cipherstash-agent`, or from a team, starts no self-test job at all, not even the `skipped` job, so ordinary review requests add nothing to the pull request's checks.
 
-The test covers Ready and requested-reviewer requests. Comment commands are not tested yet.
+The test covers all three kinds of review request: Ready, requested-reviewer and comment command.
+
+### Comment commands
+
+A comment command is a new comment on a pull request whose first line is `@cipherstash-agent review` (see [Claude review](#claude-review)).
+When a team member posts one on a pull request in this repository, the self-test runs as above, with these differences:
+
+- **It tests `main`, not the pull request.** GitHub always runs a comment's workflows from the default branch. So the self-test file, the review workflow it calls and the step files all come from `main`, whatever the pull request changes. To test a pull request's own version of the review workflow, use a Ready or requested-reviewer request (see [Running the test again](#running-the-test-again)). This part of the test cannot run at all until the self-test, with its `issue_comment` trigger, is merged to `main`.
+- The `verify` job checks that the decision is a comment-command request for the comment that started the run. It then checks that the comment has the review workflow's 👀 reaction. The reaction must be by `github-actions[bot]` (the `REACTION_AUTHOR` setting in the workflow), the account that the review workflow's `react` job reacts as, so a 👀 added by hand does not count. The job reads the comment's reactions every 5 seconds, for up to 60 seconds; the `react` job has finished before `verify` starts, so the reaction is normally there at once. When it finds the reaction, it shows it in a notice, `Comment command reacted to`, and in the run's summary. Last, it waits for the stub's reply for this run attempt, as for the other kinds.
+- Only comments that the review workflow would take as a comment command start the test. All other comments start no self-test job at all: the workflow run shows only skipped jobs, and no `skipped` job explains it. That includes:
+  - ordinary comments, and comments that mention `cipherstash-agent` without being a command
+  - comments on plain issues, and on closed or merged pull requests
+  - comments by bots, and by `cipherstash-agent` itself. The stub posts its reply as `cipherstash-agent`, so its reply can never start another run.
+  - comments by anyone who is not an owner, member or collaborator of the repository (GitHub's `author_association`), as in [`examples/claude-review.yml`](examples/claude-review.yml). This is only a filter that saves starting a runner. The review workflow's team membership check is what decides.
+  - edited or deleted comments
+
+  The filter is a job condition, which cannot match patterns, so it takes only a first line of `@cipherstash-agent review` (in any case) followed by the end of the comment, a space, a tab or a line break. A command with other spacing, such as two spaces before `review`, is still a command to the review workflow, but it does not start the test. A unit test runs the request decision on sample comments to check that the filter never lets through a comment that the review workflow would skip as not a command.
+- Comment commands are tested on drafts, because the review workflow takes them on drafts.
+- Comment commands are tested on pull requests from forks too. A comment's event does not say whether the pull request comes from a fork, and the review workflow takes comment commands on forks. A comment's run has this repository's secrets even on a fork's pull request, but nothing from the fork is checked out or run: every job uses `main`'s files only, the review workflow reviews by the pull request's link, and only a team member's command is sent. So the secrets reach no code from the fork.
+
+To run it, post a comment on an open pull request in this repository whose first line is:
+
+```text
+@cipherstash-agent review
+```
+
+You must be a member of the `@cipherstash/developers` team. The comment command always needs the membership check, so if the App's secrets do not reach this repository, it fails with the reason `membership-lookup-failed` (see [Settings](#settings)).
+The run appears in the Actions tab under "Self-test". It is not shown in the pull request's checks, because a comment's run is not tied to the pull request's commit.
+The stub's reply is a comment on the pull request, as for the other kinds. It starts no real review.
 
 ### Settings
 
@@ -285,20 +313,27 @@ The `verify` job fails with one error that says what went wrong:
 
 - `The review workflow decided not to request a review (<reason>)`: the review workflow skipped the request. The reason is one of the [reasons for skipping](#reasons-for-skipping). The `review / decide` job's summary and errors say more. For example, `membership-lookup-failed` means the membership check could not be made.
 - `The review workflow decided to request a review of the wrong kind (<kind>)`: the decision does not match the event, for example a Ready request when a review was requested. Look at the `review / decide` job.
-- `The self-test does not test a pull_request event with the action ...`: the run was started by an event the test does not run on. The workflow's `on:` list and the `verify` step disagree.
+- `The self-test does not test a <event> event with the action ...`: the run was started by an event the test does not run on. The workflow's `on:` list and the `verify` step disagree.
 - `The review workflow gave no decision to request a review`: the review workflow did not finish its decision. Look at its `decide` job.
 - `... but the request was not sent to the stub routine`: the stub's trigger refused the request or could not be reached. The `review / fire` job's error says why. Check the token secret and the trigger id variable. If the `fire` job was cancelled, a newer request (a newer push or event for the same pull request) may have replaced it.
 - `GitHub answered HTTP 401, 403 or 404 when asked for the pull request's comments`: retrying cannot fix it, so the job fails at once. Check the job's token and permissions.
 - `No reply from the stub routine within 300 seconds`: the request was sent, but no comment by `@cipherstash-agent` on the pull request names this run attempt. The error says how many comments the last read took and how many comments with the marker and this attempt's link were ignored for being from another author. Each such comment also gets a notice, `Reply ignored`, that names its author and association. If there are some, the stub posted as a different account than `REPLY_AUTHOR`. Otherwise check that the stub's prompt matches the one above, that the stub can comment on this repository, and the stub's session in Claude. If reading the comments failed as well, the error ends with the last failure.
 - `REPLY_AUTHOR is empty or missing`: the workflow does not name the account whose reply to accept, so the job fails at once rather than accept anyone's comment.
 
+For a comment command, there are three more:
+
+- `The review workflow's decision is for comment ..., not the comment that started this run`: the review workflow decided about a different comment. Look at its `decide` job.
+- `No 👀 reaction from @github-actions[bot] on comment ... within 60 seconds`: the request was sent, but the review workflow's `react` job did not add the reaction. Its warning says why, for example an HTTP status from GitHub. The error also says how many 👀 reactions from other accounts were not counted. If reading the reactions failed, the error ends with the last failure. A refusal (`GitHub answered HTTP 401, 403 or 404 when asked for the comment's reactions`) fails at once.
+- `COMMENT_ID is empty or not a number` or `REACTION_AUTHOR is empty or missing`: the workflow does not give the comment or the account to check, so the job fails at once.
+
+A comment command by someone who is not on the team (but is an owner, member or collaborator of the repository) also makes the test fail, by design, with the reason `not-a-team-member`.
 A requested-reviewer request made by a bot, by the review agent itself, or by someone who is not on the team also makes the test fail, by design: the review workflow skips it with the reason `bot`, `review-agent` or `not-a-team-member`, and the `verify` job reports that reason. Such a request tests nothing about the stub. A review requested on a closed pull request starts no self-test job at all.
 
 Each attempt looks only for a reply that names its own attempt's link, so a reply to an earlier run or an earlier attempt never counts.
 
 ### Running the test again
 
-Pushing new commits does not run the self-test again. To test a pull request's latest commit:
+Pushing new commits does not run the self-test again. A comment command does not help here, because it tests `main`, not the pull request (see [Comment commands](#comment-commands)). To test a pull request's latest commit:
 
 - Request a review from `cipherstash-agent` in the pull request's Reviewers box. If it was requested before, use the re-request button next to its name. This works on drafts too.
 - Or mark the pull request as a draft, and then as ready for review again.
