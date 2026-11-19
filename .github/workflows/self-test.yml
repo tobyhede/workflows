@@ -10,12 +10,14 @@
 # was of the wrong kind for the event, or if it was not sent, and otherwise waits a few minutes for the stub's reply
 # naming this run attempt.
 #
-# A team member's comment command, a new pull request comment whose first line is `@cipherstash-agent review`, runs the
-# test too, and the verify job also checks that the comment got the review workflow's 👀 reaction. A comment always
+# A comment command, a new pull request comment whose first line is `@cipherstash-agent review`, runs the test too,
+# and the verify job also checks that the comment got the review workflow's 👀 reaction. A comment always
 # runs the workflow file, the review workflow and the step files from the default branch, main, so this part tests
 # main's version, not the pull request's, and runs only once this file is on main. Comments that cannot be a comment
 # command start no job: other comments, comments on plain issues or closed pull requests, comments by bots or by the
-# review agent (the stub's own reply among them), and comments by anyone who is not an owner, member or collaborator.
+# review agent (the stub's own reply among them). A comment command from someone who is not a team member does start
+# the job, and the run ends red with `not-a-team-member`, by design: GitHub reports a team member whose organisation
+# membership is private as CONTRIBUTOR or NONE, so the commenter's author_association cannot tell who may ask.
 #
 # Pull requests from forks (which get none of this repository's secrets) and pull requests opened by bots are not
 # tested, and neither are drafts when they are opened or reopened: the skipped job says why. Marking a draft ready, or
@@ -90,10 +92,11 @@ jobs:
   # review workflow does). A command with other spacing, such as two spaces, is a command to the review workflow but
   # is not tested. fromJSON gives the tab and line breaks, which an expression's string cannot hold. Comments by bots
   # and by the review agent (the stub's reply among them) and comments on closed pull requests start no job, because
-  # the review workflow skips them; the author_association test, as in examples/claude-review.yml, keeps comments from
-  # outside the repository's members from starting a runner. The review workflow still decides, and checks team
-  # membership. A comment's payload does not say whether the pull request comes from a fork, and the review workflow
-  # takes comment commands on forks, so they are tested: nothing from the fork is checked out or run.
+  # the review workflow skips them. There is no author_association test, as in examples/claude-review.yml: a team
+  # member whose organisation membership is private shows as CONTRIBUTOR or NONE and would be skipped silently. The
+  # review workflow decides, and checks team membership, so a non-member's command starts a run that ends red with
+  # not-a-team-member, by design. A comment's payload does not say whether the pull request comes from a fork, and
+  # the review workflow takes comment commands on forks, so they are tested: nothing from the fork is checked out or run.
   review:
     if: >-
       (github.event_name == 'pull_request'
@@ -108,7 +111,6 @@ jobs:
       && github.event.issue.state == 'open'
       && github.event.comment.user.type != 'Bot'
       && github.event.comment.user.login != 'cipherstash-agent'
-      && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
       && (github.event.comment.body == '@cipherstash-agent review'
       || startsWith(github.event.comment.body, '@cipherstash-agent review ')
       || startsWith(github.event.comment.body, format('@cipherstash-agent review{0}', fromJSON('"\t"')))

@@ -407,10 +407,22 @@ class SelfTestWorkflowTest(unittest.TestCase):
             with self.subTest(**case):
                 self.assertEqual(jobs_run(comment_event(**case)), set())
 
-    def test_a_comment_command_from_outside_the_repositorys_members_runs_no_job(self):
+    def test_a_comment_command_runs_the_review_job_whatever_the_commenters_association(self):
+        # GitHub reports a team member whose organisation membership is private as CONTRIBUTOR or NONE, so the
+        # association is no filter: the review workflow's team membership check decides, and ends the run red for a
+        # non-member.
         for association in ("CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "MANNEQUIN", None):
             with self.subTest(association=association):
-                self.assertEqual(jobs_run(comment_event(association=association)), set())
+                self.assertEqual(jobs_run(comment_event(association=association)), {"review"})
+
+    def test_a_bot_or_review_agent_command_runs_no_job_whatever_its_association(self):
+        for association in ("OWNER", "CONTRIBUTOR", "NONE", None):
+            for case in ({"author_type": "Bot", "login": "dependabot[bot]"}, {"login": "cipherstash-agent"}):
+                with self.subTest(association=association, **case):
+                    self.assertEqual(jobs_run(comment_event(association=association, **case)), set())
+
+    def test_the_review_job_does_not_filter_comments_by_author_association(self):
+        self.assertNotIn("author_association", value(".jobs.review.if"))
 
     def test_a_comment_command_on_a_closed_pull_request_or_a_plain_issue_runs_no_job(self):
         self.assertEqual(jobs_run(comment_event(state="closed")), set())
@@ -500,8 +512,7 @@ class SelfTestWorkflowTest(unittest.TestCase):
         )
 
     def test_the_verify_job_does_not_filter_the_reply_by_author_association(self):
-        # The review job's comment filter reads the comment command's author_association, as the example caller does;
-        # the stub's reply is accepted by its author's login alone.
+        # The stub's reply is accepted by its author's login alone.
         self.assertNotIn("author_association", value(".jobs.verify | tojson"))
 
     def test_the_review_workflow_gives_its_decision_and_whether_it_sent_the_request(self):

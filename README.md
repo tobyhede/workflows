@@ -242,7 +242,7 @@ The stub only posts a comment saying it received the request, so a test run is f
 
 ### What it does
 
-[`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) runs when a pull request in this repository is opened, reopened or marked ready for review, when someone requests a review from the review agent, `cipherstash-agent`, on a pull request here, and when a team member posts a comment command on a pull request here (see [Comment commands](#comment-commands)).
+[`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) runs when a pull request in this repository is opened, reopened or marked ready for review, when someone requests a review from the review agent, `cipherstash-agent`, on a pull request here, and when someone posts a comment command on a pull request here (see [Comment commands](#comment-commands)).
 
 1. The `review` job calls `.github/workflows/claude-review.yml` by GitHub's self-repository form, `uses: $/.github/workflows/claude-review.yml`, which names this repository at the exact commit that is running. (`$/` needs github.com and runner 2.336.0 or later.) For a Ready or requested-reviewer request, that is the pull request's own version, so the version under test is the one in the pull request. For a comment command, it is `main`'s version (see [Comment commands](#comment-commands)). The job passes the stub routine's trigger id and token, never the real routine's.
 2. The review workflow decides, as it would for any repository. For a review requested from `cipherstash-agent`, the person who requested it must be a member of the `@cipherstash/developers` team, as for any requested reviewer. If it decides to request a review, it sends the request to the stub. The request text includes a link to this run attempt, `<server>/<repo>/actions/runs/<id>/attempts/<n>`.
@@ -262,7 +262,7 @@ The test covers all three kinds of review request: Ready, requested-reviewer and
 ### Comment commands
 
 A comment command is a new comment on a pull request whose first line is `@cipherstash-agent review` (see [Claude review](#claude-review)).
-When a team member posts one on a pull request in this repository, the self-test runs as above, with these differences:
+When someone posts one on a pull request in this repository, the self-test runs as above, with these differences:
 
 - **It tests `main`, not the pull request.** GitHub always runs a comment's workflows from the default branch. So the self-test file, the review workflow it calls and the step files all come from `main`, whatever the pull request changes. To test a pull request's own version of the review workflow, use a Ready or requested-reviewer request (see [Running the test again](#running-the-test-again)). This part of the test cannot run at all until the self-test, with its `issue_comment` trigger, is merged to `main`.
 - The `verify` job checks that the decision is a comment-command request for the comment that started the run. It then checks that the comment has the review workflow's 👀 reaction. The reaction must be by `github-actions[bot]` (the `REACTION_AUTHOR` setting in the workflow), the account that the review workflow's `react` job reacts as, so a 👀 added by hand does not count. This account is not yet confirmed by a live run. If the first live run fails on the reaction check, check `REACTION_AUTHOR` first. The job reads the comment's reactions every 5 seconds, for up to 60 seconds; the `react` job has finished before `verify` starts, so the reaction is normally there at once. When it finds the reaction, it shows it in a notice, `Comment command reacted to`, and in the run's summary. Last, it waits for the stub's reply for this run attempt, as for the other kinds.
@@ -270,8 +270,9 @@ When a team member posts one on a pull request in this repository, the self-test
   - ordinary comments, and comments that mention `cipherstash-agent` without being a command
   - comments on plain issues, and on closed or merged pull requests
   - comments by bots, and by `cipherstash-agent` itself. The stub posts its reply as `cipherstash-agent`, so its reply can never start another run.
-  - comments by anyone who is not an owner, member or collaborator of the repository (GitHub's `author_association`), as in [`examples/claude-review.yml`](examples/claude-review.yml). This is only a filter that saves starting a runner. The review workflow's team membership check is what decides.
   - edited or deleted comments
+
+  Comments are not filtered by the commenter's standing in the repository (GitHub's `author_association`), as in [`examples/claude-review.yml`](examples/claude-review.yml), because GitHub reports a team member whose organisation membership is private as `CONTRIBUTOR` or `NONE`, and a filter on it would skip their command without any run. The review workflow's team membership check decides. So a command from someone who is not a team member does start a run, which ends red with `not-a-team-member`, by design.
 
   The filter is a job condition, which cannot match patterns, so it takes only a first line of `@cipherstash-agent review` (in any case) followed by the end of the comment, a space, a tab or a line break. A command with other spacing, such as two spaces before `review`, is still a command to the review workflow, but it does not start the test. A unit test runs the request decision on sample comments to check that the filter never lets through a comment that the review workflow would skip as not a command.
 - Comment commands are tested on drafts, because the review workflow takes them on drafts.
