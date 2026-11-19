@@ -4,10 +4,10 @@
   "requester": "octocat",
   "pull_request": {
     "number": 42,
-    "url": "https://github.com/cipherstash/example/pull/42"
+    "url": "https://github.com/octocat/example/pull/42"
   },
   "comment_id": 2500000001,
   "instructions": null,
   "react": true,
-  "text": "Review pull request #42 in cipherstash/example: https://github.com/cipherstash/example/pull/42\n\nKind of review request: comment-command."
+  "text": "Review pull request #42 in octocat/example: https://github.com/octocat/example/pull/42\n\nKind of review request: comment-command."
 }

@@ -1,34 +1,37 @@
 {
   "event_name": "issue_comment",
   "review_agent": "cipherstash-agent",
-  "membership": null,
   "event": {
     "action": "created",
     "issue": {
       "number": 42,
       "title": "Add key rotation",
       "state": "open",
-      "html_url": "https://github.com/cipherstash/example/pull/42",
+      "html_url": "https://github.com/octocat/example/pull/42",
       "user": {
         "login": "octocat",
         "type": "User"
       },
       "pull_request": {
-        "url": "https://api.github.com/repos/cipherstash/example/pulls/42",
-        "html_url": "https://github.com/cipherstash/example/pull/42"
+        "url": "https://api.github.com/repos/octocat/example/pulls/42",
+        "html_url": "https://github.com/octocat/example/pull/42"
       }
     },
     "comment": {
       "id": 2500000001,
-      "html_url": "https://github.com/cipherstash/example/pull/42#issuecomment-2500000001",
-      "body": "@CipherStash-Agent REVIEW",
+      "html_url": "https://github.com/octocat/example/pull/42#issuecomment-2500000001",
+      "body": "> ORB PONDER",
       "user": {
         "login": "octocat",
         "type": "User"
       }
     },
     "repository": {
-      "full_name": "cipherstash/example"
+      "full_name": "octocat/example",
+      "owner": {
+        "login": "octocat",
+        "type": "User"
+      }
     },
     "sender": {
       "login": "octocat",
