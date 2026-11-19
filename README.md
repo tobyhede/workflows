@@ -81,10 +81,9 @@ Only the reusable workflow's `react` job uses that permission; its other jobs ho
 The calling job also has an `if:` that starts the reusable workflow only for comments on pull requests that mention `@cipherstash-agent`, and for review requests for `cipherstash-agent`, to save starting runners for every other comment and request.
 The reusable workflow still checks every rule itself.
 
-For comments, the `if:` also lets through only commenters whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR`.
-This is a performance filter only, so a comment from anyone else does not start a runner.
-It is not the gate: the reusable workflow's team membership check decides who may request a review.
-One caveat: GitHub reports `MEMBER` only for people whose membership of the organisation is public, or when the token can see private members. A team member whose membership is private may be shown as `CONTRIBUTOR` or `NONE`, and then their comment does not start a run at all, even though they are on the team. Such a person can make their membership public, or the repository can remove the `author_association` test from the example's `if:`.
+For comments, the mention is the only filter: the `if:` does not look at the commenter's `author_association`.
+GitHub reports `MEMBER` only for people whose membership of the organisation is public, or when the token can see private members, so a team member whose membership is private shows as `CONTRIBUTOR` or `NONE`, and a filter on the association would skip their comment command without any run or message.
+The reusable workflow's team membership check is the gate that decides who may request a review; a comment from anyone else starts a run that ends without a request (see `not-a-team-member` below).
 For `review_requested` events, the `if:` also lets through only requests for `cipherstash-agent`, so a request for another reviewer does not start the workflow. Other `pull_request` events are not filtered.
 If you change the `review-agent` input, change the `@cipherstash-agent` in the `if:` to match.
 
