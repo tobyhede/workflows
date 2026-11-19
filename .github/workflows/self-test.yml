@@ -44,9 +44,10 @@ permissions: {}
 
 jobs:
   # Says why a pull request is not tested. Runs exactly when the review job does not, except for a review requested
-  # from anyone but the review agent or on a closed pull request, and any comment, which run neither. The review agent's login must match the review workflow's
-  # review-agent input, which this file leaves at its default; a job's condition cannot read that input. GitHub
-  # compares strings ignoring case, as the review workflow does, and a team's request has no requested_reviewer.
+  # from anyone but the review agent or on a closed pull request, and any comment, which run neither. The review
+  # agent's login must match the review workflow's review-agent input, which this file leaves at its default; a job's
+  # condition cannot read that input. GitHub compares strings ignoring case, as the review workflow does, and a team's
+  # request has no requested_reviewer.
   skipped:
     if: >-
       github.event_name == 'pull_request'
@@ -131,8 +132,8 @@ jobs:
     if: ${{ !cancelled() && needs.review.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Reads the pull request's comments, and a comment's reactions. This repository is public, so the checkout below needs no contents permission,
-    # as the review workflow's own jobs show.
+    # Reads the pull request's comments, and a comment's reactions. This repository is public, so the checkout below
+    # needs no contents permission, as the review workflow's own jobs show.
     permissions:
       issues: read
     env:
