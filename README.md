@@ -292,6 +292,8 @@ The `verify` job fails with one error that says what went wrong:
 - `No reply from the stub routine within 300 seconds`: the request was sent, but no comment by `@cipherstash-agent` on the pull request names this run attempt. The error says how many comments the last read took and how many comments with the marker and this attempt's link were ignored for being from another author. Each such comment also gets a notice, `Reply ignored`, that names its author and association. If there are some, the stub posted as a different account than `REPLY_AUTHOR`. Otherwise check that the stub's prompt matches the one above, that the stub can comment on this repository, and the stub's session in Claude. If reading the comments failed as well, the error ends with the last failure.
 - `REPLY_AUTHOR is empty or missing`: the workflow does not name the account whose reply to accept, so the job fails at once rather than accept anyone's comment.
 
+A requested-reviewer request made by a bot, by the review agent itself, or by someone who is not on the team also makes the test fail, by design: the review workflow skips it with the reason `bot`, `review-agent` or `not-a-team-member`, and the `verify` job reports that reason. Such a request tests nothing about the stub. A review requested on a closed pull request starts no self-test job at all.
+
 Each attempt looks only for a reply that names its own attempt's link, so a reply to an earlier run or an earlier attempt never counts.
 
 ### Running the test again
@@ -307,6 +309,10 @@ For those, mark the pull request as a draft and then as ready for review.
 
 A requested-reviewer request needs the membership check, because the person who requested the review must be a team member.
 If the App's secrets do not reach this repository, it fails with the reason `membership-lookup-failed` (see [Settings](#settings)).
+
+A pull request that is opened with `cipherstash-agent` already in Reviewers sends two events, `opened` and `review_requested`, so it starts two self-test runs.
+Only one request is sent at a time for a pull request, so the second waits. A third request that arrives while the second is waiting replaces the waiting one (see `concurrency` above).
+The replaced run's `verify` job then reports that the request was not sent, because its `fire` job was cancelled. That failure is expected, and the newer run tests the commit.
 
 "Re-run all jobs" tests the same commit again, and gets a new attempt, with a new attempt link.
 

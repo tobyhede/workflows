@@ -1,6 +1,9 @@
 """The self-test workflow, .github/workflows/self-test.yml: what it calls, with which routine, and when."""
 
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 
 from harness import SELF_TEST, _yq, file_steps, step_field, step_file_path, step_shells
@@ -58,10 +61,20 @@ class Expression:
         return False
 
     def evaluate(self):
+        return bool(self.result())
+
+    def result(self):
         result = self.either()
         if self.position != len(self.tokens):
             raise ValueError("the expression has text left over")
-        return bool(result)
+        return result
+
+    def render(self):
+        """The value as GitHub writes it into an `env:` entry: true and false in lower case, null as empty."""
+        result = self.result()
+        if isinstance(result, bool):
+            return "true" if result else "false"
+        return "" if result is None else str(result)
 
     def either(self):
         left = self.both()
@@ -107,11 +120,12 @@ class Expression:
         return token
 
 
-def event(action="opened", draft=False, fork=False, author_type="User", reviewer=None, team=None):
+def event(action="opened", draft=False, fork=False, author_type="User", reviewer=None, team=None, state="open"):
     """A pull_request event's payload, trimmed to what the jobs' conditions read."""
     payload = {
         "action": action,
         "pull_request": {
+            "state": state,
             "draft": draft,
             "head": {"repo": {"full_name": "someone/workflows" if fork else REPOSITORY}},
             "user": {"login": "monalisa", "type": author_type},
@@ -124,9 +138,32 @@ def event(action="opened", draft=False, fork=False, author_type="User", reviewer
     return payload
 
 
+def context_of(payload):
+    return {"github": {"event": payload, "event_name": "pull_request", "repository": REPOSITORY}}
+
+
+def skipped_job_says(payload):
+    """What the `skipped` job's step reports for the payload: its env filled in as GitHub would, and its script run."""
+    context = context_of(payload)
+    names = value(".jobs.skipped.steps[0].env | keys | .[]").split()
+    env = {name: Expression(value(f".jobs.skipped.steps[0].env.{name}"), context).render() for name in names}
+    script = _yq(".jobs.skipped.steps[0].run", SELF_TEST)
+    with tempfile.TemporaryDirectory() as temp:
+        summary = os.path.join(temp, "summary")
+        result = subprocess.run(
+            ["bash", "-c", script],
+            env={**os.environ, **env, "GITHUB_STEP_SUMMARY": summary},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        with open(summary, encoding="utf-8") as file:
+            return result.stdout, file.read()
+
+
 def jobs_run(payload):
     """The names of the self-test's jobs, out of skipped and review, that run for the payload."""
-    context = {"github": {"event": payload, "event_name": "pull_request", "repository": REPOSITORY}}
+    context = context_of(payload)
     return {job for job in ("skipped", "review") if Expression(value(f".jobs.{job}.if"), context).evaluate()}
 
 
@@ -190,6 +227,42 @@ class SelfTestWorkflowTest(unittest.TestCase):
         ):
             with self.subTest(**case):
                 self.assertEqual(jobs_run(event("review_requested", **case)), set())
+
+    def test_a_review_requested_on_a_closed_pull_request_runs_no_job(self):
+        for reviewer in ("cipherstash-agent", "CipherStash-Agent"):
+            for case in ({}, {"draft": True}, {"fork": True}, {"author_type": "Bot"}):
+                with self.subTest(reviewer=reviewer, **case):
+                    closed = event("review_requested", reviewer=reviewer, state="closed", **case)
+                    self.assertEqual(jobs_run(closed), set())
+
+    def test_the_skipped_job_says_a_draft_is_why(self):
+        for action in ("opened", "reopened"):
+            with self.subTest(action=action):
+                notice, summary = skipped_job_says(event(action, draft=True))
+                self.assertIn("::notice title=Self-test skipped::Not tested: the pull request is a draft", notice)
+                self.assertIn("requesting a review from cipherstash-agent, runs the test", notice)
+                self.assertIn("Self-test: skipped (the pull request is a draft", summary)
+
+    def test_the_skipped_job_does_not_call_a_requested_draft_a_draft(self):
+        # A review requested on a draft is tested, so a draft never explains a skip for it: its fork or bot does.
+        notice, _ = skipped_job_says(event("review_requested", draft=True, fork=True, reviewer="cipherstash-agent"))
+        self.assertIn("comes from a fork", notice)
+        notice, _ = skipped_job_says(
+            event("review_requested", draft=True, author_type="Bot", reviewer="cipherstash-agent")
+        )
+        self.assertIn("opened by a bot", notice)
+
+    def test_the_skipped_job_says_a_fork_or_a_bot_is_why(self):
+        notice, summary = skipped_job_says(event("opened", fork=True))
+        self.assertIn("Not tested: the pull request comes from a fork", notice)
+        self.assertIn("Self-test: skipped (the pull request comes from a fork", summary)
+        notice, summary = skipped_job_says(event("ready_for_review", author_type="Bot"))
+        self.assertIn("Not tested: the pull request was opened by a bot", notice)
+        self.assertIn("Self-test: skipped (the pull request was opened by a bot", summary)
+
+    def test_the_skipped_job_names_a_draft_before_a_fork(self):
+        notice, _ = skipped_job_says(event("opened", draft=True, fork=True))
+        self.assertIn("is a draft", notice)
 
     def test_the_review_agent_requested_is_the_one_the_review_workflow_acts_for(self):
         # The conditions name the review agent, as a job's `if:` cannot read the review workflow's input default.

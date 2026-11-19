@@ -12,7 +12,8 @@
 # Pull requests from forks (which get none of this repository's secrets) and pull requests opened by bots are not
 # tested, and neither are drafts when they are opened or reopened: the skipped job says why. Marking a draft ready, or
 # requesting a review from the review agent, runs the test; the review workflow takes a requested reviewer on a draft
-# too. A review requested from anyone else, or from a team, starts no job at all, not even the skipped one.
+# too. A review requested from anyone else, or from a team, or on a closed pull request, starts no job at all, not even
+# the skipped one: the review workflow would skip a closed pull request, and the verify job would fail for it.
 #
 # Needs, as repository settings (never the real routine's trigger or token):
 #   secret CLAUDE_ROUTINE_INTEGRATION_TEST_TOKEN        the stub routine's bearer token
@@ -30,12 +31,13 @@ permissions: {}
 
 jobs:
   # Says why a pull request is not tested. Runs exactly when the review job does not, except for a review requested
-  # from anyone but the review agent, which runs neither. The review agent's login must match the review workflow's
+  # from anyone but the review agent or on a closed pull request, which runs neither. The review agent's login must match the review workflow's
   # review-agent input, which this file leaves at its default; a job's condition cannot read that input. GitHub
   # compares strings ignoring case, as the review workflow does, and a team's request has no requested_reviewer.
   skipped:
     if: >-
-      (github.event.action != 'review_requested' || github.event.requested_reviewer.login == 'cipherstash-agent')
+      (github.event.action != 'review_requested'
+      || (github.event.requested_reviewer.login == 'cipherstash-agent' && github.event.pull_request.state == 'open'))
       && ((github.event.action != 'review_requested' && github.event.pull_request.draft)
       || github.event.pull_request.head.repo.full_name != github.repository
       || github.event.pull_request.user.type == 'Bot')
@@ -65,7 +67,8 @@ jobs:
   # tested only for a requested reviewer, which the review workflow takes on drafts too.
   review:
     if: >-
-      (github.event.action != 'review_requested' || github.event.requested_reviewer.login == 'cipherstash-agent')
+      (github.event.action != 'review_requested'
+      || (github.event.requested_reviewer.login == 'cipherstash-agent' && github.event.pull_request.state == 'open'))
       && (github.event.action == 'review_requested' || github.event.pull_request.draft == false)
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.type != 'Bot'
