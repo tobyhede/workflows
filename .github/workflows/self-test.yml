@@ -37,8 +37,9 @@ on:
   # Runs with this repository's secrets, from main, for any comment on an issue or pull request here. Only a team
   # member's comment command is acted on: the review job's condition filters out comments that cannot be one, and the
   # review workflow checks every rule itself, team membership included. No job checks out or runs the pull request's
-  # code; every file comes from main.
-  issue_comment:
+  # code; every file comes from main. zizmor flags issue_comment because anyone who can comment can start this
+  # workflow. Accepted for those reasons, as in examples/claude-review.yml.
+  issue_comment: # zizmor: ignore[dangerous-triggers] only a team member's comment command is acted on
     types: [created]
 
 permissions: {}
