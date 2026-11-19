@@ -66,6 +66,14 @@ class SelfTestWorkflowTest(unittest.TestCase):
             value(".jobs.verify.steps[] | select(.id == \"verify\") | .env.SENT"), "${{ needs.review.outputs.sent }}"
         )
 
+    def test_the_verify_step_accepts_a_reply_only_from_the_stub_routines_account(self):
+        self.assertEqual(
+            value(".jobs.verify.steps[] | select(.id == \"verify\") | .env.REPLY_AUTHOR"), "cipherstash-agent"
+        )
+
+    def test_the_workflow_does_not_filter_the_reply_by_author_association(self):
+        self.assertNotIn("author_association", SELF_TEST.read_text(encoding="utf-8"))
+
     def test_the_review_workflow_gives_its_decision_and_whether_it_sent_the_request(self):
         outputs = '.on.workflow_call.outputs'
         self.assertEqual(_yq(f"{outputs}.decision.value").strip(), "${{ jobs.decide.outputs.decision }}")

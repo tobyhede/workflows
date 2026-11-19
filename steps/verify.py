@@ -1,15 +1,16 @@
 """The self-test's verify step: checks that the review workflow requested a review from the stub routine, then waits for
 the stub's reply on the pull request.
 
-Passes only when a comment on the pull request, by an owner, member or collaborator of the repository, contains the
-marker `integration-test: received` and this run attempt's link (`<server>/<repo>/actions/runs/<id>/attempts/<n>`),
-which the review request includes and the stub echoes back. Fails with one error annotation that says what went wrong:
-the review workflow decided not to request a review (naming the skip reason), the request was not sent, or no reply
-came within WAIT_SECONDS.
+Passes only when a comment on the pull request, by the stub routine's account (REPLY_AUTHOR), contains the marker
+`integration-test: received` and this run attempt's link (`<server>/<repo>/actions/runs/<id>/attempts/<n>`), which the
+review request includes and the stub echoes back. Fails with one error annotation that says what went wrong: no
+account to expect, the review workflow decided not to request a review (naming the skip reason), the request was not
+sent, or no reply came within WAIT_SECONDS (saying how many comments were read and how many carried the marker and
+this attempt's link but came from another author).
 
-Inputs, all environment variables: DECISION and SENT (the review workflow's outputs), GITHUB_TOKEN (the job's token,
-which only reads comments) and the runner's GITHUB_API_URL, GITHUB_REPOSITORY, GITHUB_SERVER_URL, GITHUB_RUN_ID,
-GITHUB_RUN_ATTEMPT, GITHUB_OUTPUT and GITHUB_STEP_SUMMARY.
+Inputs, all environment variables: DECISION and SENT (the review workflow's outputs), REPLY_AUTHOR (the login the stub
+routine posts as), GITHUB_TOKEN (the job's token, which only reads comments) and the runner's GITHUB_API_URL,
+GITHUB_REPOSITORY, GITHUB_SERVER_URL, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT, GITHUB_OUTPUT and GITHUB_STEP_SUMMARY.
 Python's standard library only (3.10 features); tests/test_verify.py runs this file.
 """
 
@@ -36,9 +37,6 @@ MAX_BODY_BYTES = 8 * 1024 * 1024
 
 # A run attempt's link, as the review workflow's decide job writes it and the request decision accepts it.
 RUN_URL = re.compile(r"https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/attempts/[0-9]+")
-# Who may post the reply: people with a standing in the repository. Anyone can comment on a public pull request, so a
-# copy of the marker from anyone else is not the stub's reply.
-TRUSTED_AUTHORS = ("OWNER", "MEMBER", "COLLABORATOR")
 # HTTP statuses that reading the comments again cannot fix: the token or the pull request is wrong.
 REFUSED = (401, 403, 404)
 
@@ -49,6 +47,26 @@ class Failed(Exception):
 
 class Unread(Exception):
     """The comments could not be read this time; the message says why."""
+
+
+class Tally:
+    """What the reads of the comments have seen, for the timeout's message and for noticing each near-match once."""
+
+    def __init__(self) -> None:
+        self.read = 0  # comments read in the last pass over the pages
+        self.ignored: set[Any] = set()  # near-matches from another author, by comment id, across all passes
+
+
+def reply_author() -> str:
+    """The login the stub routine posts as. Anyone can comment on a public pull request, so a copy of the marker from
+    another account is not the stub's reply; an empty login would accept everyone, so it is an error."""
+    login = os.environ.get("REPLY_AUTHOR", "").strip()
+    if not login:
+        raise Failed(
+            "REPLY_AUTHOR is empty or missing, so there is no account whose reply to accept: "
+            "set it to the login the stub routine posts as in the self-test workflow"
+        )
+    return login
 
 
 def run_url() -> str:
@@ -112,31 +130,54 @@ def comments_page(token: str, number: int, page: int) -> list[Any]:
     return comments
 
 
-def find_reply(token: str, number: int, url: str, deadline: float) -> dict[str, Any] | None:
-    """The first comment on the pull request, by someone with a standing in the repository, that holds the marker and
-    this run attempt's link, not a longer number. Stops looking at the deadline, even part way through the pages."""
+def find_reply(
+    token: str, number: int, url: str, author: str, deadline: float, tally: Tally
+) -> dict[str, Any] | None:
+    """The first comment on the pull request by `author` (compared without regard to case) that holds the marker and
+    this run attempt's link, not a longer number. A comment that holds both but is by someone else is counted in
+    tally and noticed once. Stops looking at the deadline, even part way through the pages."""
     names_this_run = re.compile(re.escape(url) + r"(?![0-9])")
+    tally.read = 0
     for page in range(1, MAX_PAGES + 1):
         comments = comments_page(token, number, page)
         for comment in comments:
             if not isinstance(comment, dict):
                 continue
+            tally.read += 1
             found: dict[str, Any] = comment
             body = found.get("body")
-            trusted = found.get("author_association") in TRUSTED_AUTHORS
-            if trusted and isinstance(body, str) and MARKER in body and names_this_run.search(body):
+            if not (isinstance(body, str) and MARKER in body and names_this_run.search(body)):
+                continue
+            user = found.get("user")
+            login = user.get("login") if isinstance(user, dict) else None
+            if isinstance(login, str) and login.casefold() == author.casefold():
                 return found
+            key = found.get("id", len(tally.ignored))
+            if key not in tally.ignored:
+                tally.ignored.add(key)
+                # The login and the association come from the comment, so they are untrusted: escaped, and quoted.
+                who = f"@{login}" if isinstance(login, str) else "an unknown author"
+                association = found.get("author_association")
+                print(
+                    "::notice title=Reply ignored::"
+                    + escaped(
+                        f"A comment with the marker and this attempt's link is by {who} (association {association}), "
+                        f"not by the expected author @{author}, so it is ignored"
+                    ),
+                    flush=True,
+                )
         if len(comments) < PAGE_SIZE or time.monotonic() >= deadline:
             break
     return None
 
 
-def wait_for_reply(token: str, number: int, url: str) -> dict[str, Any]:
+def wait_for_reply(token: str, number: int, url: str, author: str) -> dict[str, Any]:
     deadline = time.monotonic() + WAIT_SECONDS
+    tally = Tally()
     problem = ""
     while True:
         try:
-            reply = find_reply(token, number, url, deadline)
+            reply = find_reply(token, number, url, author, deadline, tally)
             problem = ""
         except Unread as failure:
             reply = None
@@ -146,10 +187,14 @@ def wait_for_reply(token: str, number: int, url: str) -> dict[str, Any]:
         if time.monotonic() + POLL_SECONDS > deadline:
             break
         time.sleep(POLL_SECONDS)
+    count = len(tally.ignored)
     message = (
-        f"No reply from the stub routine within {WAIT_SECONDS:g} seconds: no comment on pull request #{number} "
-        f"contains `{MARKER}` and this run attempt's link, {url}. Check that the stub routine's prompt asks it to post "
-        "that comment, and that it can comment on this repository (see Self-test in the README)"
+        f"No reply from the stub routine within {WAIT_SECONDS:g} seconds: no comment on pull request #{number} by "
+        f"@{author} contains `{MARKER}` and this run attempt's link, {url}. The last read took {tally.read} "
+        f"{'comment' if tally.read == 1 else 'comments'} from the pull request, and in all {count} with the marker "
+        f"and this attempt's link were ignored for being from another author. Check that the stub routine's prompt "
+        f"asks it to post that comment, that it posts as @{author}, and "
+        "that it can comment on this repository (see Self-test in the README)"
     )
     if problem:
         message += f". The last read of the comments failed: {problem}"
@@ -175,9 +220,10 @@ def report(reply: dict[str, Any]) -> None:
 
 
 try:
+    author = reply_author()
     url = run_url()
     number = requested_pull_request(os.environ.get("DECISION", ""), os.environ.get("SENT", ""))
-    report(wait_for_reply(os.environ.get("GITHUB_TOKEN", ""), number, url))
+    report(wait_for_reply(os.environ.get("GITHUB_TOKEN", ""), number, url, author))
 except Failed as failure:
     error(str(failure))
     sys.exit(1)

@@ -12,6 +12,7 @@ TOKEN = "ghs_unitTestVerifyTokenThatMustNeverBePrinted0001"
 COMMENTS_PATH = "/repos/cipherstash/example/issues/42/comments?per_page=100&page={page}"
 PAGE_1 = COMMENTS_PATH.format(page=1)
 PAGE_2 = COMMENTS_PATH.format(page=2)
+STUB_LOGIN = "cipherstash-agent"
 REPLY = f"integration-test: received ready request from {RUN_URL}"
 # Short waits, so a test that waits for a reply that never comes ends quickly.
 QUICK = {"WAIT_SECONDS = 300": "WAIT_SECONDS = 1", "POLL_SECONDS = 15": "POLL_SECONDS = 0.1"}
@@ -30,7 +31,7 @@ def fire_decision():
     )
 
 
-def comment(body, login="cipherstash-agent", number=1, association="MEMBER"):
+def comment(body, login=STUB_LOGIN, number=1, association="MEMBER"):
     return {
         "id": number,
         "body": body,
@@ -45,7 +46,7 @@ def page(*comments):
 
 class VerifyTest(unittest.TestCase):
     def verify(self, routes=None, api_url=None, substitutions=None, runner=None, **overrides):
-        env = {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true"}
+        env = {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true", "REPLY_AUTHOR": STUB_LOGIN}
         env.update(overrides)
         with StubServer(routes) as stub:
             result = run_step(
@@ -73,9 +74,9 @@ class VerifyTest(unittest.TestCase):
 
 class GivenTheStubReplies(VerifyTest):
     def test_a_reply_naming_this_run_passes_and_is_shown_with_its_author(self):
-        result = self.verify({PAGE_1: page(comment("Thanks"), comment(REPLY, login="claude-stub[bot]", number=2))})
+        result = self.verify({PAGE_1: page(comment("Thanks"), comment(REPLY, number=2))})
         self.assert_passed(result)
-        self.assertIn("@claude-stub[bot]", result.stdout)
+        self.assertIn("@cipherstash-agent", result.stdout)
         self.assertIn(REPLY, result.stdout)
         self.assertIn(REPLY, result.summary)
 
@@ -106,7 +107,7 @@ class GivenTheStubReplies(VerifyTest):
             result = run_step(
                 "verify",
                 "verify",
-                {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true"},
+                {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true", "REPLY_AUTHOR": STUB_LOGIN},
                 api_url=stub.url,
                 substitutions={"WAIT_SECONDS = 300": "WAIT_SECONDS = 5", "POLL_SECONDS = 15": "POLL_SECONDS = 0.1"},
                 workflow=SELF_TEST,
@@ -162,16 +163,40 @@ class GivenNoReplyNamesThisRun(VerifyTest):
         result = self.verify({PAGE_1: page(comment(f"integration-test: received ready request from {RUN_URL}."))})
         self.assert_passed(result)
 
-    def test_a_reply_from_someone_with_no_association_to_the_repository_is_ignored(self):
-        for association in ("NONE", "FIRST_TIME_CONTRIBUTOR", "CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", None, 7):
-            with self.subTest(association=association):
-                result = self.verify({PAGE_1: page(comment(REPLY, association=association))})
-                self.assert_failed(result, "No reply from the stub routine")
-
-    def test_a_reply_from_an_owner_member_or_collaborator_counts(self):
-        for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+    def test_a_reply_counts_whatever_association_the_token_sees_for_the_stub(self):
+        # The job's token may see a private organisation member as CONTRIBUTOR or NONE; only the login decides.
+        for association in ("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE", "FIRST_TIMER", None, 7):
             with self.subTest(association=association):
                 self.assert_passed(self.verify({PAGE_1: page(comment(REPLY, association=association))}))
+
+    def test_a_comment_with_no_association_field_counts_for_the_stub(self):
+        reply = comment(REPLY)
+        del reply["author_association"]
+        self.assert_passed(self.verify({PAGE_1: page(reply)}))
+
+    def test_the_expected_login_is_compared_without_regard_to_case(self):
+        stub = page(comment(REPLY, login="CipherStash-Agent"))
+        result = self.verify({PAGE_1: stub}, REPLY_AUTHOR="cipherstash-AGENT")
+        self.assert_passed(result)
+
+    def test_a_copy_of_the_reply_from_another_login_is_ignored_whatever_its_association(self):
+        for association in ("OWNER", "MEMBER", "COLLABORATOR", "NONE"):
+            with self.subTest(association=association):
+                result = self.verify({PAGE_1: page(comment(REPLY, login="stranger", association=association))})
+                self.assert_failed(result, "No reply from the stub routine")
+
+    def test_a_login_that_only_contains_the_expected_one_is_ignored(self):
+        for login in ("cipherstash-agent2", "not-cipherstash-agent", "cipherstash-agent[bot]"):
+            with self.subTest(login=login):
+                result = self.verify({PAGE_1: page(comment(REPLY, login=login))})
+                self.assert_failed(result, "No reply from the stub routine")
+
+    def test_a_comment_with_no_login_is_ignored(self):
+        for user in (None, {}, {"login": 7}, "cipherstash-agent"):
+            with self.subTest(user=user):
+                reply = comment(REPLY)
+                reply["user"] = user
+                self.assert_failed(self.verify({PAGE_1: page(reply)}), "No reply from the stub routine")
 
     def test_a_copy_of_the_reply_from_someone_else_does_not_hide_the_real_one(self):
         result = self.verify(
@@ -179,6 +204,60 @@ class GivenNoReplyNamesThisRun(VerifyTest):
         )
         self.assert_passed(result)
         self.assertIn("@cipherstash-agent", result.stdout)
+
+    def test_a_near_match_from_another_login_is_noticed_once_naming_its_login_and_association(self):
+        result = self.verify({PAGE_1: page(comment(REPLY, login="stranger", association="CONTRIBUTOR"))})
+        self.assert_failed(result, "No reply from the stub routine")
+        notices = [line for line in result.stdout.splitlines() if line.startswith("::notice") and "stranger" in line]
+        self.assertEqual(len(notices), 1, result.stdout)
+        self.assertIn("@stranger", notices[0])
+        self.assertIn("CONTRIBUTOR", notices[0])
+        self.assertIn("cipherstash-agent", notices[0])
+
+    def test_the_author_in_a_notice_cannot_add_an_annotation(self):
+        result = self.verify(
+            {PAGE_1: page(comment(REPLY, login="x\n::error::injected%0A", association="NONE\n::warning::too"))}
+        )
+        self.assertEqual(len(result.errors()), 1, result.stdout)
+        self.assertEqual(result.warnings(), [])
+        self.assertFalse(any(line.startswith("::warning") for line in result.stdout.splitlines()), result.stdout)
+
+    def test_a_comment_without_the_marker_or_this_attempt_is_not_a_near_match(self):
+        other = "https://github.com/cipherstash/example/actions/runs/1234567890/attempts/2"
+        result = self.verify(
+            {
+                PAGE_1: page(
+                    comment("Thanks", login="stranger"),
+                    comment(f"integration-test: received ready request from {other}", login="stranger", number=2),
+                )
+            }
+        )
+        self.assertFalse(any(line.startswith("::notice") for line in result.stdout.splitlines()), result.stdout)
+        self.assertIn("took 2 comments", result.errors()[0])
+        self.assertIn("0 with the marker and this attempt's link were ignored", result.errors()[0])
+
+    def test_the_timeout_says_how_many_comments_were_read_and_how_many_near_matches_were_ignored(self):
+        result = self.verify(
+            {
+                PAGE_1: page(
+                    comment("Thanks"),
+                    comment(REPLY, login="stranger", number=2),
+                    comment(REPLY, login="other", number=3),
+                )
+            }
+        )
+        self.assert_failed(result, "No reply from the stub routine")
+        self.assertIn("took 3 comments", result.errors()[0])
+        self.assertIn("2 with the marker and this attempt's link were ignored", result.errors()[0])
+        self.assertIn("cipherstash-agent", result.errors()[0])
+
+    def test_a_missing_or_empty_expected_login_fails_without_reading_comments(self):
+        for value in ("", "  ", None):
+            with self.subTest(value=value):
+                result = self.verify({PAGE_1: page(comment(REPLY))}, REPLY_AUTHOR=value)
+                self.assert_failed(result, "REPLY_AUTHOR")
+                self.assertNotIn("No reply from the stub routine", result.errors()[0])
+                self.assertEqual(self.stub.requests, [])
 
     def test_the_deadline_is_checked_between_pages_too(self):
         full = StubServer.slow(0.6, page(*[comment(f"comment {n}", number=n) for n in range(100)]))
@@ -264,7 +343,12 @@ class GivenTheRunIsNotKnown(VerifyTest):
                     result = run_step(
                         "verify",
                         "verify",
-                        {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true"},
+                        {
+                            "GITHUB_TOKEN": TOKEN,
+                            "DECISION": fire_decision(),
+                            "SENT": "true",
+                            "REPLY_AUTHOR": STUB_LOGIN,
+                        },
                         api_url=stub.url,
                         substitutions=QUICK,
                         runner={name: None},

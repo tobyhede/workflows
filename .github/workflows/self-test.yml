@@ -103,6 +103,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           DECISION: ${{ needs.review.outputs.decision }}
           SENT: ${{ needs.review.outputs.sent }}
+          # The account the stub routine posts its reply as. Only a comment by this login counts as the reply: the
+          # job's token may not see the stub's organisation membership, so the author's standing in the repository is not used.
+          REPLY_AUTHOR: cipherstash-agent
           # The check's file, from this pull request's checkout. Python's standard library only (3.10 features), so
           # nothing is installed; tests/test_verify.py runs this file.
           STEP_FILE: ${{ env.WORKFLOW_FILES }}/steps/verify.py
