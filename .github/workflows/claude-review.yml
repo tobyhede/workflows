@@ -1,5 +1,5 @@
-# Asks Claude for a code review of a pull request: decides whether the calling event is a review request from a team
-# member and, if it is, fires the Claude code-review routine trigger for that pull request.
+# Asks Claude for a code review of a pull request: decides whether the calling event is a review request from the
+# owner of the calling repository and, if it is, fires the Claude code-review routine trigger for that pull request.
 #
 # Called from a short caller workflow in each repository (see examples/claude-review.yml). A reusable workflow runs in
 # the calling repository, so the decide job checks out the request decision, request-decision/decision.jq, and the
@@ -10,15 +10,19 @@
 #
 # Kinds of review request:
 #   Ready: a non-draft pull request opened or reopened, or a draft marked ready for review. Drafts, bots' pull requests,
-#     forks and deleted forks are skipped, and so is a pull request whose author is not a team member. A pull request
-#     opened by the review agent is reviewed without a membership lookup.
-#   Comment command: a team member's new pull request comment whose first line is `@<review agent> review`, on drafts
-#     and forks too. The rest of the comment is passed on as instructions, and the comment gets a 👀 reaction once the
-#     request is sent. Comments by bots and by the review agent are skipped without a lookup, and so are commands on
-#     closed or merged pull requests.
-#   Requested reviewer: a team member requests a review from the review agent in a pull request's Reviewers box, on
-#     drafts too. Requests for anyone else or for a team are skipped, as are requests made by bots or the review agent
-#     (without a lookup), and requests on closed pull requests or forks.
+#     forks and deleted forks are skipped, and so is a pull request whose author is not the owner. A pull request
+#     opened by the review agent is reviewed too.
+#   Comment command: the owner's new pull request comment whose first line is `> orb ponder`, on drafts and forks
+#     too. The rest of the comment is passed on as instructions, and the comment gets a 👀 reaction once the request
+#     is sent. Comments by bots and by the review agent are skipped, and so are commands on closed or merged pull
+#     requests.
+#   Requested reviewer: the owner requests a review from the review agent in a pull request's Reviewers box, on
+#     drafts too. Needs the review-agent input. Requests for anyone else or for a team are skipped, as are requests
+#     made by bots or the review agent, and requests on closed pull requests or forks.
+#
+# The owner is the account that owns the calling repository. Nothing is looked up: the event names both the owner
+# and the requester. In a repository an organisation owns, no person is the owner, so only the review agent's own
+# pull requests are reviewed.
 name: Claude review
 
 on:
@@ -28,23 +32,13 @@ on:
         description: The Claude code-review routine's trigger id (`trig_…`), usually `vars.CLAUDE_ROUTINE_TRIGGER_ID`.
         type: string
         required: true
-      team:
-        description: The slug of the team, in the calling repository's owner organisation, whose members may request a review.
-        type: string
-        default: developers
       review-agent:
-        description: The login of the review agent, the account mentioned in a comment command or requested as a reviewer, whose pull requests are reviewed without a membership lookup and whose comments and reviewer requests never request a review.
+        description: The login of the review agent, if there is one. This is the account requested as a reviewer, whose pull requests are reviewed though it is not the owner and whose comments and reviewer requests never request a review. Empty means no review agent.
         type: string
-        default: cipherstash-agent
+        default: ''
     secrets:
       CLAUDE_ROUTINE_TOKEN:
         description: The code-review routine's bearer token.
-        required: true
-      CLAUDE_REVIEW_APP_ID:
-        description: The id of the GitHub App, installed on the organisation with only "Members, read", that looks up team membership.
-        required: true
-      CLAUDE_REVIEW_APP_PRIVATE_KEY:
-        description: That GitHub App's private key.
         required: true
 
 permissions: {}
@@ -86,8 +80,8 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
-      - name: Decide (before any membership lookup)
-        id: first
+      - name: Decide
+        id: decision
         continue-on-error: true
         env:
           REVIEW_AGENT: ${{ inputs.review-agent }}
@@ -106,7 +100,7 @@ jobs:
             --arg event_name "$GITHUB_EVENT_NAME" \
             --arg review_agent "$REVIEW_AGENT" \
             --slurpfile event "$GITHUB_EVENT_PATH" \
-            '{event_name: $event_name, event: $event[0], review_agent: $review_agent, membership: null}' >"$request"
+            '{event_name: $event_name, event: $event[0], review_agent: $review_agent}' >"$request"
           # Writes one step output. A random delimiter makes any value safe, even one with a newline in it.
           output() {
             local delimiter
@@ -114,59 +108,6 @@ jobs:
             printf '%s<<%s\n%s\n%s\n' "$1" "$delimiter" "$2" "$delimiter" >>"$GITHUB_OUTPUT"
           }
           decision="$(jq --compact-output --from-file "$REQUEST_DECISION_FILE" "$request")"
-          requester="$(jq --raw-output '.requester // ""' <<<"$decision")"
-          # "true" or "false".
-          needs_lookup="$(jq '.decision == "lookup"' <<<"$decision")"
-          output decision "$decision"
-          output requester "$requester"
-          # The later steps test this one output, not the decision's text.
-          output needs-lookup "$needs_lookup"
-
-      - name: Create the membership App's token
-        id: app-token
-        if: steps.first.outputs.needs-lookup == 'true'
-        # A failed token is reported by the next step and skips the request.
-        continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.CLAUDE_REVIEW_APP_ID }}
-          private-key: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-members: read
-
-      - name: Look up team membership
-        id: lookup
-        if: steps.first.outputs.needs-lookup == 'true'
-        continue-on-error: true
-        env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          TOKEN_OUTCOME: ${{ steps.app-token.outcome }}
-          ORG: ${{ github.repository_owner }}
-          TEAM: ${{ inputs.team }}
-          REQUESTER: ${{ steps.first.outputs.requester }}
-          # The lookup's file, from this repository's checkout. Python's standard library only (3.10 features), so
-          # nothing is installed; tests/test_lookup.py runs this file.
-          STEP_FILE: ${{ env.WORKFLOW_FILES }}/steps/lookup.py
-        # Membership is never assumed: anything but a clear answer from GitHub is "lookup-failed", which skips. If the
-        # file cannot be run, the membership output is missing, and the next step treats that as "lookup-failed".
-        run: python3 "$STEP_FILE"
-
-      - name: Decide (with the membership lookup's result)
-        id: second
-        if: steps.first.outputs.needs-lookup == 'true'
-        continue-on-error: true
-        env:
-          MEMBERSHIP: ${{ steps.lookup.outputs.membership || 'lookup-failed' }}
-          REQUEST_DECISION_FILE: ${{ env.WORKFLOW_FILES }}/request-decision/decision.jq
-        run: |
-          # Writes one step output. A random delimiter makes any value safe, even one with a newline in it.
-          output() {
-            local delimiter
-            delimiter="ghadelim_$(cat /proc/sys/kernel/random/uuid)"
-            printf '%s<<%s\n%s\n%s\n' "$1" "$delimiter" "$2" "$delimiter" >>"$GITHUB_OUTPUT"
-          }
-          decision="$(jq --compact-output --arg membership "$MEMBERSHIP" '.membership = $membership' "$RUNNER_TEMP/request.json" \
-            | jq --compact-output --from-file "$REQUEST_DECISION_FILE")"
           output decision "$decision"
 
       - name: Report the decision
@@ -176,8 +117,7 @@ jobs:
         # that if anything below breaks, that skip is what the fire job sees; the valid decision then replaces it.
         continue-on-error: true
         env:
-          FIRST: ${{ steps.first.outputs.decision }}
-          SECOND: ${{ steps.second.outputs.decision }}
+          DECISION: ${{ steps.decision.outputs.decision }}
           # The report's file, from this repository's checkout. Python's standard library only (3.10 features), so
           # nothing is installed; tests/test_report.py runs this file.
           STEP_FILE: ${{ env.WORKFLOW_FILES }}/steps/report.py

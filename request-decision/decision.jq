@@ -3,10 +3,9 @@
 # The reusable workflow's decide job checks out this repository at the commit the caller pinned and runs this file,
 # and request-decision/test runs it against the saved cases, so the tests run exactly what ships.
 #
-# Input: {event_name, event, review_agent, membership}, where membership is null before a lookup, or "member",
-# "not-member" or "lookup-failed" after one. Output, exactly one of:
+# Input: {event_name, event, review_agent}. The owner is the account that owns the repository the event is in,
+# event.repository.owner.login. Output, exactly one of:
 #   {"decision": "skip", "reason": "<code>"}
-#   {"decision": "lookup", "requester": "<login>"}
 #   {"decision": "fire", "kind": "ready", "requester": "<login>", "pull_request": {"number": N, "url": "…"},
 #    "react": false, "text": "…"}
 #   {"decision": "fire", "kind": "comment-command", "requester": "<login>", "pull_request": {…}, "comment_id": N,
@@ -16,22 +15,19 @@
 
 def skip($reason): {decision: "skip", reason: $reason};
 
-# Fires for a member, or asks for a lookup when membership is not known yet.
-def gate($requester; $fire):
-  if .membership == null then {decision: "lookup", requester: $requester}
-  elif .membership == "member" then $fire
-  elif .membership == "not-member" then skip("not-a-team-member")
-  # "lookup-failed", or anything unexpected: membership is never assumed.
-  else skip("membership-lookup-failed")
-  end;
+# GitHub logins are not case-sensitive. A payload with no owner has no owner to match, so nobody is the owner.
+def is_owner($login):
+  ($login // "" | ascii_downcase) as $l | $l != "" and $l == (.event.repository.owner.login // "" | ascii_downcase);
 
-# GitHub logins are not case-sensitive.
+# Fires only for the owner. A repository an organisation owns has no person as its owner, so nothing fires there.
+def gate($requester; $fire): if is_owner($requester) then $fire else skip("not-the-owner") end;
+
 def is_review_agent($login): ($login // "" | ascii_downcase) as $l | $l != "" and $l == (.review_agent // "" | ascii_downcase);
 
-# Gates a person: the comment's author or the review request's sender, who must be a team member. A payload with no
-# person is not one this decision can act on. Bots and the review agent are skipped before any lookup, so automation
-# cannot start a review, and a review that mentions the agent cannot start another. The ready path does not use this:
-# it fires for the review agent without a lookup.
+# Gates a person: the comment's author or the review request's sender, who must be the owner. A payload with no
+# person is not one this decision can act on. Bots and the review agent are skipped first, so automation cannot
+# start a review, and a review the agent posts cannot start another. The ready path does not use this: it fires
+# for the review agent's own pull requests.
 def gate_person($p; $fire):
   if $p == null then skip("not-a-review-request")
   elif $p.type == "Bot" then skip("bot")
@@ -57,12 +53,12 @@ def request($kind; $requester; $number; $url):
   | .text = "Review pull request #\($number) in \($event_repo): \($url)\n\nKind of review request: \($kind).";
 
 # Ready: a non-draft pull request opened or reopened, or a draft marked ready for review. The requester is the
-# author. A pull request the review agent opened is reviewed without a lookup: the agent opens most pull
-# requests, and they need review too.
+# author, who must be the owner. A pull request the review agent opened is reviewed too, though the agent is not
+# the owner.
 def ready:
   .event.pull_request as $pr
   | request("ready"; $pr.user.login; $pr.number; $pr.html_url) as $fire
-  # A payload with no author is not one this decision can act on: there is no one to look up or credit.
+  # A payload with no author is not one this decision can act on: there is no one to check or credit.
   | if $pr.user == null then skip("not-a-review-request")
     elif $pr.draft == true then skip("draft")
     elif $pr.user.type == "Bot" then skip("bot")
@@ -71,26 +67,22 @@ def ready:
     else gate($pr.user.login; $fire)
     end;
 
-# A comment command's first line, ignoring case, is "@<review agent>", whitespace, then "review", followed by
-# whitespace or the end of the line. The line may not start with whitespace, so a command quoted with ">",
-# indented as code or inside a fenced code block (whose first line is the fence) does not count. Returns the
-# comment after "review" (the rest of the first line and every later line, with Windows line endings made
-# plain), or null when the comment is not a command.
+# A comment command's first line, ignoring case, is ">", optional whitespace, "orb", whitespace, then "ponder",
+# followed by whitespace or the end of the line: "> orb ponder" or ">orb ponder". The command is plain text, not
+# a mention of an account. The line may not start with whitespace, so a command indented as code or inside a
+# fenced code block (whose first line is the fence) does not count, and neither does a quoted command, which
+# starts "> >". Returns the comment after "ponder" (the rest of the first line and every later line, with
+# Windows line endings made plain), or null when the comment is not a command.
 def command_rest:
   ((.event.comment.body // "") | gsub("\r\n"; "\n") | split("\n")) as $lines
   | ($lines[0] // "" | rtrimstr("\r")) as $line
-  | ("@" + (.review_agent // "" | ascii_downcase)) as $prefix
-  | if $prefix != "@" and ($line | ascii_downcase | startswith($prefix))
-    then $line[($prefix | length):]
-      | (capture("^(?<command>[ \t]+review)(?:[ \t]|$)"; "i").command // null) as $command
-      | if $command == null then null else ([.[($command | length):]] + $lines[1:] | join("\n")) end
-    else null
-    end;
+  | ($line | capture("^(?<command>>[ \t]*orb[ \t]+ponder)(?:[ \t]|$)"; "i").command // null) as $command
+  | if $command == null then null else ([$line[($command | length):]] + $lines[1:] | join("\n")) end;
 
 # Comment command: a new comment on a pull request (drafts and forks included: the routine reviews by URL, and
 # no pull request code runs here). The requester is the comment's author. Comments by bots and by the review
-# agent are skipped before any lookup, so a review that mentions the agent cannot start another. Instructions
-# are the comment after "review", trimmed and capped, and go after the fixed text as a marked block of data.
+# agent are skipped, so a review the agent posts cannot start another. Instructions
+# are the comment after "ponder", trimmed and capped, and go after the fixed text as a marked block of data.
 def comment_command:
   .event.issue as $issue
   | .event.comment as $comment
@@ -118,7 +110,7 @@ def comment_command:
   | if .event.action != "created" or $issue.pull_request == null then skip("not-a-review-request")
     elif $rest == null then skip("not-a-command")
     # A closed (or merged) pull request is not reviewed. Checked after the command match, so an ordinary comment
-    # on one is still not-a-command, and before the author checks, so no lookup is made.
+    # on one is still not-a-command, and before the author checks.
     elif $issue.state == "closed" then skip("closed")
     else gate_person($comment.user; $fire)
     end;
@@ -127,9 +119,9 @@ def comment_command:
 # other user, or for a team (the payload then has requested_team and no requested_reviewer), is not one. The
 # requester is the person who made the request, the event's sender; the payload has no author_association for
 # them. Drafts are reviewed, because asking is explicit. A closed pull request is not, as for comment commands.
-# A fork's pull_request events get none of the repository's secrets, so the membership lookup could never
-# succeed: forks are skipped before it. Requests made by bots and by the review agent are skipped before any
-# lookup, so automation cannot start a review.
+# A fork's pull_request events get none of the repository's secrets, so the request could never be sent to the
+# routine: forks are skipped. Requests made by bots and by the review agent are skipped, so automation cannot
+# start a review.
 def requested_reviewer:
   .event.pull_request as $pr
   | .event.sender as $sender

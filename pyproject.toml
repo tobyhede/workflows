@@ -44,7 +44,6 @@ module = [
     "test_decision_file",
     "test_fire",
     "test_helpers",
-    "test_lookup",
     "test_react",
     "test_python_steps",
     "test_report",

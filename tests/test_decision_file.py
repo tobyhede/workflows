@@ -37,14 +37,12 @@ def checked_out(path, patterns):
 
 
 class DecisionFileTest(unittest.TestCase):
-    def test_each_env_path_is_in_the_checkout_and_matched_by_a_sparse_pattern(self):
+    def test_the_decision_file_is_in_the_checkout_and_matched_by_a_sparse_pattern(self):
         _, patterns = checkout()
-        for step_id in ("first", "second"):
-            with self.subTest(step=step_id):
-                path = checked_out_file("decide", step_id, "REQUEST_DECISION_FILE")
-                self.assertTrue(path.is_file(), path)
-                relative = path.relative_to(ROOT).as_posix()
-                self.assertTrue(checked_out(relative, patterns), (relative, patterns))
+        path = checked_out_file("decide", "decision", "REQUEST_DECISION_FILE")
+        self.assertTrue(path.is_file(), path)
+        relative = path.relative_to(ROOT).as_posix()
+        self.assertTrue(checked_out(relative, patterns), (relative, patterns))
 
 
 class CheckoutTest(unittest.TestCase):

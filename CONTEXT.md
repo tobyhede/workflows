@@ -1,6 +1,6 @@
-# CipherStash shared workflows
+# Personal shared workflows
 
-Reusable GitHub Actions workflows shared by CipherStash repositories, starting with asking Claude to review a pull request.
+Reusable GitHub Actions workflows for repositories a personal GitHub account owns, starting with asking Claude to review a pull request.
 
 ## Language
 
@@ -13,19 +13,19 @@ The review request made when a non-draft pull request is opened or reopened, or 
 _Avoid_: auto review
 
 **Comment command**:
-The review request made by a member's comment whose first line starts, with no leading whitespace, with `@cipherstash-agent review`; the rest of the comment is the request's instructions.
+The review request made by the owner's comment whose first line starts, with no leading whitespace, with `> orb ponder` (the space after `>` is optional); the rest of the comment is the request's instructions.
 _Avoid_: mention, slash command
 
 **Requested reviewer**:
 The review request made by requesting a review from the review agent in a pull request's Reviewers box.
 _Avoid_: assigned reviewer
 
-**Team member**:
-A member of the GitHub team allowed to make review requests (by default `@cipherstash/developers`); nobody else can cause a review.
-_Avoid_: member, collaborator, maintainer
+**Owner**:
+The account that owns the repository a review request is made in, the only person allowed to make review requests; nobody else can cause a review.
+_Avoid_: member, collaborator, maintainer, admin
 
 **Review agent**:
-The `cipherstash-agent` GitHub account that people mention or request to ask for a review, and under which the review is posted.
+An optional separate GitHub account that the owner requests as a reviewer to ask for a review, and under which the review is posted; none is set by default.
 _Avoid_: bot, Claude user
 
 **Routine trigger**:

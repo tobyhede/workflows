@@ -1,13 +1,12 @@
 {
   "event_name": "pull_request",
   "review_agent": "cipherstash-agent",
-  "membership": "member",
   "event": {
     "action": "review_requested",
     "number": 42,
     "pull_request": {
       "number": 42,
-      "html_url": "https://github.com/cipherstash/example/pull/42",
+      "html_url": "https://github.com/octocat/example/pull/42",
       "title": "Add key rotation",
       "state": "open",
       "draft": true,
@@ -18,14 +17,14 @@
       "head": {
         "ref": "feat/key-rotation",
         "repo": {
-          "full_name": "cipherstash/example",
+          "full_name": "octocat/example",
           "fork": false
         }
       },
       "base": {
         "ref": "main",
         "repo": {
-          "full_name": "cipherstash/example",
+          "full_name": "octocat/example",
           "fork": false
         }
       }
@@ -35,10 +34,14 @@
       "type": "User"
     },
     "repository": {
-      "full_name": "cipherstash/example"
+      "full_name": "octocat/example",
+      "owner": {
+        "login": "octocat",
+        "type": "User"
+      }
     },
     "sender": {
-      "login": "monalisa",
+      "login": "octocat",
       "type": "User"
     }
   }

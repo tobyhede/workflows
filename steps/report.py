@@ -3,8 +3,8 @@
 It writes the "decision-failed" skip first, so that if anything below breaks, that skip is what the fire job sees; the
 valid decision then replaces it.
 
-Inputs, all environment variables: FIRST and SECOND (the decisions before and after the membership lookup) and the
-runner's GITHUB_OUTPUT and GITHUB_STEP_SUMMARY.
+Inputs, all environment variables: DECISION (the request decision, as the decide step wrote it) and the runner's
+GITHUB_OUTPUT and GITHUB_STEP_SUMMARY.
 Python's standard library only (3.10 features); tests/test_report.py runs this file.
 """
 
@@ -49,13 +49,11 @@ def summary(decision: dict[str, Any]) -> str:
 
 try:
     output("decision", FAILED)
-    value = os.environ.get("SECOND") or os.environ.get("FIRST") or ""
+    value = os.environ.get("DECISION") or ""
     decision = finished(value)
     if decision is None:
         error("The request decision did not finish; no review was requested")
         value, decision = FAILED, json.loads(FAILED)
-    if decision.get("reason") == "membership-lookup-failed":
-        error("Team membership could not be checked, so no review was requested")
     # Passed on as the decision step wrote it.
     output("decision", value)
     line = summary(decision)

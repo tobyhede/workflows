@@ -1,7 +1,6 @@
 {
   "event_name": "issues",
   "review_agent": "cipherstash-agent",
-  "membership": null,
   "event": {
     "action": "opened",
     "issue": {

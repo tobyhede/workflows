@@ -1,70 +1,73 @@
-# CipherStash shared workflows
+# Personal shared workflows
 
-Reusable GitHub Actions workflows shared by CipherStash repositories.
+Reusable GitHub Actions workflows for repositories a personal GitHub account owns.
+This is a fork of [cipherstash/workflows](https://github.com/cipherstash/workflows), changed so the owner of a repository takes the place of an organisation team.
 
-The first one asks Claude to review a pull request.
-It is being built.
-The plan is in [issue #1](https://github.com/cipherstash/workflows/issues/1).
+The one workflow asks Claude to review a pull request.
 
-The words this repository uses, such as *review request* and *team member*, are defined in [CONTEXT.md](CONTEXT.md).
+The words this repository uses, such as *review request* and *owner*, are defined in [CONTEXT.md](CONTEXT.md).
 
 ## Claude review
 
 [`.github/workflows/claude-review.yml`](.github/workflows/claude-review.yml) is a reusable workflow.
-It decides whether an event is a review request from a team member and, if it is, fires the Claude code-review routine trigger for that pull request.
+It decides whether an event is a review request from the owner of the calling repository and, if it is, fires the Claude code-review routine trigger for that pull request.
+
+The owner is the account that owns the repository, as GitHub names it in the event (`repository.owner.login`).
+Nobody else can request a review: not a collaborator, and not the author of a pull request from a fork.
+Nothing is looked up, because the event names both the owner and the requester.
+In a repository an organisation owns, no person is the owner, so no one can request a review there.
 
 It handles these kinds of review request.
 
 **Ready**: a non-draft pull request opened or reopened, or a draft marked ready for review.
 It skips drafts, pull requests from bots, and pull requests from forks, including deleted forks.
-It reviews a pull request only if its author is a team member.
-A pull request opened by the review agent is reviewed without a membership check, because the agent opens most pull requests.
+It reviews a pull request only if its author is the owner.
+A pull request opened by the review agent, if one is set, is reviewed too.
 
-**Comment command**: a team member comments on a pull request, and the comment's first line starts with `@cipherstash-agent review`.
+**Comment command**: the owner comments on a pull request, and the comment's first line starts with `> orb ponder`.
 
-- The first line must start with the command, with no space before it, so a quoted reply (`> @cipherstash-agent review`), an indented code block or a fenced code block does not count.
-- The mention and `review` are matched ignoring case, and `review` must be followed by a space, a tab or the end of the line. `@cipherstash-agent reviewer`, `@cipherstash-agent-bot review` and `thanks @cipherstash-agent review` are not commands.
+- The command is plain text, not a mention of an account. GitHub shows it as a quoted line.
+- The first line must start with the `>`, with no space before it, so an indented code block or a fenced code block does not count. Nor does a quoted reply (`> > orb ponder`).
+- The space after `>` is optional, and there can be more than one: `>orb ponder` and `>  orb ponder` are commands too. There must be at least one space or tab between `orb` and `ponder`.
+- `orb` and `ponder` are matched ignoring case, and `ponder` must be followed by a space, a tab or the end of the line. `> orb ponders`, `> orbit ponder`, `> orb please ponder` and `thanks > orb ponder` are not commands.
 - Only new comments count. Editing or deleting a comment does nothing.
 - Every command fires, so asking twice gets two reviews.
 - It works on drafts, because asking is explicit.
-- It works on pull requests from forks when a team member comments. The routine reviews the pull request by its URL; no code from the fork runs in the workflow.
-- Comments by bots, and by the review agent itself, never request a review, and no membership check is made for them. This stops a review that mentions the agent from starting another.
-- The requester is the comment's author, who must be a team member.
+- It works on pull requests from forks when the owner comments. The routine reviews the pull request by its URL; no code from the fork runs in the workflow.
+- Comments by bots, and by the review agent itself, never request a review. This stops a review the agent posts from starting another.
+- The requester is the comment's author, who must be the owner.
 
-Anything after `review`, on the first line and on the lines below it, is passed to the review as **instructions**, for example:
+If the review is posted under the owner's own account, no review agent is set, and nothing but the command's shape stops a review from starting another: a review comment whose first line is `> orb ponder` would request a new review.
+
+Anything after `ponder`, on the first line and on the lines below it, is passed to the review as **instructions**, for example:
 
 ```text
-@cipherstash-agent review focus on the key-rotation path
+> orb ponder focus on the key-rotation path
 ```
 
 The instructions are trimmed and capped at 2,000 characters; longer instructions are cut and end with `…[truncated]`.
 They go after the request's fixed text, in a block marked as data from the requester, so they cannot replace the routine's own instructions.
 
 Once the request is sent, the comment gets a 👀 reaction, so the requester knows it was received.
-A 👀 means the request was sent. No 👀 usually means it was not: the comment was not a command, its author is not a team member, the pull request is closed, the request failed, or a newer request for the same pull request replaced this one while it was still waiting to send (see `concurrency` below). But a request that was sent can also end without a 👀 if adding the reaction failed, and that looks the same, so check the run to be sure.
+A 👀 means the request was sent. No 👀 usually means it was not: the comment was not a command, its author is not the owner, the pull request is closed, the request failed, or a newer request for the same pull request replaced this one while it was still waiting to send (see `concurrency` below). But a request that was sent can also end without a 👀 if adding the reaction failed, and that looks the same, so check the run to be sure.
 
-Punctuation straight after `review`, as in `@cipherstash-agent review!`, means the comment is not a command, and it is ignored without any message. Put a space or a new line after `review`.
+Punctuation straight after `ponder`, as in `> orb ponder!`, means the comment is not a command, and it is ignored without any message. Put a space or a new line after `ponder`.
 
-**Requested reviewer**: a team member requests a review from `cipherstash-agent` in a pull request's Reviewers box.
+**Requested reviewer**: the owner requests a review from the review agent in a pull request's Reviewers box.
+This kind needs a separate GitHub account to act as the review agent, named in the `review-agent` input. Without one it never fires, and the example caller does not listen for it.
 
-- The requester is the person who made the request (the event's sender), not the pull request's author, and must be a team member.
+- The requester is the person who made the request (the event's sender), not the pull request's author, and must be the owner.
 - Only a request for the review agent itself counts, matched ignoring case. A request for any other person, or for a team, does nothing.
-- Requests made by bots, and by the review agent itself, never request a review, and no membership check is made for them.
-- A review request that GitHub makes by itself, such as one from a CODEOWNERS file, may have a sender that is not a person. A bot sender is skipped as `bot`, and a payload with no sender is skipped as `not-a-review-request`. Any other sender is treated as the requester and must be a team member.
+- Requests made by bots, and by the review agent itself, never request a review.
+- A review request that GitHub makes by itself, such as one from a CODEOWNERS file, may have a sender that is not a person. A bot sender is skipped as `bot`, and a payload with no sender is skipped as `not-a-review-request`. Any other sender is treated as the requester and must be the owner.
 - It works on drafts, because asking is explicit.
 - It does nothing on a closed or merged pull request.
-- It does nothing on a pull request from a fork, including a deleted fork. GitHub does not give a fork's `pull_request` events the repository's secrets, so the membership check could never succeed. On a fork, use the comment command instead.
-- Every request fires. To ask again, remove `cipherstash-agent` from the reviewers and request it again, or use the comment command.
-- Once the review agent has posted a review, the re-request button in the Reviewers box should also send a new request. This is expected, but it has not been tried yet.
+- It does nothing on a pull request from a fork, including a deleted fork. GitHub does not give a fork's `pull_request` events the repository's secrets, so the request could never be sent. On a fork, use the comment command instead.
+- Every request fires. To ask again, remove the review agent from the reviewers and request it again, or use the comment command.
 - There is no reaction and no instructions. To add instructions, use the comment command.
 
 GitHub does not let you request a pull request's author as its reviewer.
-So on pull requests that `cipherstash-agent` opened, only Ready and the comment command can request a review.
-
-If a pull request is opened with `cipherstash-agent` already requested as a reviewer, GitHub may send both the `opened` event and the review request.
-So the pull request can get two reviews.
-To get one review, open the pull request without requesting the agent, or request it later.
-This is possible, not confirmed.
+So on pull requests that the review agent opened, only Ready and the comment command can request a review.
 
 A failed request never turns a pull request's checks red.
 It shows as an error in the workflow run instead.
@@ -74,44 +77,37 @@ It shows as an error in the workflow run instead.
 Copy [`examples/claude-review.yml`](examples/claude-review.yml) to `.github/workflows/claude-review.yml` in the repository.
 It pins the reusable workflow to a full commit SHA, with the version in a comment.
 
-The example listens to `pull_request` (opened, reopened, ready for review and review requested) and `issue_comment` (created) events.
-A caller copied before the requested reviewer kind existed needs `review_requested` added to its `pull_request` types.
+The example listens to `pull_request` (opened, reopened and ready for review) and `issue_comment` (created) events.
 Its workflow-level permissions are empty, and its calling job grants only `issues: write`, which the reaction needs: a reusable workflow's jobs can never hold more permissions than the job that calls them.
 Only the reusable workflow's `react` job uses that permission; its other jobs hold none.
-The calling job also has an `if:` that starts the reusable workflow only for comments on pull requests that mention `@cipherstash-agent`, and for review requests for `cipherstash-agent`, to save starting runners for every other comment and request.
+The calling job also has an `if:` that starts the reusable workflow only for comments on pull requests that start with `>` and contain `orb`, to save starting runners for every other comment.
 The reusable workflow still checks every rule itself.
 
-For comments, the mention is the only filter: the `if:` does not look at the commenter's `author_association`.
-GitHub reports `MEMBER` only for people whose membership of the organisation is public, or when the token can see private members, so a team member whose membership is private shows as `CONTRIBUTOR` or `NONE`, and a filter on the association would skip their comment command without any run or message.
-The reusable workflow's team membership check is the gate that decides who may request a review; a comment from anyone else starts a run that ends without a request (see `not-a-team-member` below).
-For `review_requested` events, the `if:` also lets through only requests for `cipherstash-agent`, so a request for another reviewer does not start the workflow. Other `pull_request` events are not filtered.
-If you change the `review-agent` input, change the `@cipherstash-agent` in the `if:` to match.
+For comments, that is the only filter: the `if:` does not look at who commented.
+The reusable workflow's owner check is the gate that decides who may request a review; a matching comment from anyone else starts a run that ends without a request (see `not-the-owner` below).
+`pull_request` events are not filtered.
+
+To use the requested reviewer kind, set the `review-agent` input, add `review_requested` to the caller's `pull_request` types, and add `&& (github.event.action != 'review_requested' || github.event.requested_reviewer.login == '<review agent>')` to the `if:`, so a request for another reviewer does not start the workflow.
 
 GitHub runs `issue_comment` workflows from the repository's default branch, not from the pull request's branch.
 So the comment command works only once the caller is merged into the default branch.
-A pull request that adds the caller can test the Ready path and the requested reviewer, but not the comment command.
+A pull request that adds the caller can test the Ready path, but not the comment command.
 
-The caller needs these settings, which CipherStash sets once for the whole organisation:
+The caller needs these settings on the repository:
 
 | Name | Kind | What it is |
 | --- | --- | --- |
 | `CLAUDE_ROUTINE_TOKEN` | secret | The code-review routine's bearer token. |
-| `CLAUDE_REVIEW_APP_ID` | secret | The id of the membership GitHub App. |
-| `CLAUDE_REVIEW_APP_PRIVATE_KEY` | secret | The membership GitHub App's private key. |
 | `CLAUDE_ROUTINE_TRIGGER_ID` | variable | The routine's trigger id, which starts `trig_`. |
-
-The membership GitHub App is installed on the organisation with only the "Members: read" permission.
-The workflow uses it to get a short-lived token and look up whether the requester (the pull request's author, the comment's author, or the person who requested the review agent as a reviewer) is in the team.
 
 ### Inputs and secrets
 
 | Input | Required | Default | What it is |
 | --- | --- | --- | --- |
 | `routine-trigger-id` | yes | | The routine's trigger id (`trig_…`). |
-| `team` | no | `developers` | The slug of the team, in the calling repository's organisation, whose members may request a review. |
-| `review-agent` | no | `cipherstash-agent` | The login of the review agent. |
+| `review-agent` | no | empty | The login of the review agent, if there is one. Empty means no review agent. |
 
-All three secrets, `CLAUDE_ROUTINE_TOKEN`, `CLAUDE_REVIEW_APP_ID` and `CLAUDE_REVIEW_APP_PRIVATE_KEY`, are required and must be passed explicitly, as the example does.
+The one secret, `CLAUDE_ROUTINE_TOKEN`, is required and must be passed explicitly, as the example does.
 
 ### What a run shows
 
@@ -150,15 +146,13 @@ One JSON object:
 | --- | --- |
 | `event_name` | The GitHub event name, such as `pull_request` or `issue_comment`. |
 | `event` | The event payload GitHub delivers. |
-| `review_agent` | The review agent's login. |
-| `membership` | `null` before the membership lookup; after it, `"member"`, `"not-member"` or `"lookup-failed"`. |
+| `review_agent` | The review agent's login, or an empty string if there is none. |
 
 ### Output
 
 Exactly one of:
 
 - `{"decision": "skip", "reason": "<reason>"}`: no review.
-- `{"decision": "lookup", "requester": "<login>"}`: look up whether the requester is a team member, then run the decision again with `membership` set. Only returned when `membership` is `null`.
 - `{"decision": "fire", "kind": "<kind>", "requester": "<login>", "pull_request": {"number": <n>, "url": "<url>"}, "react": <true or false>, "text": "<request text>"}`: fire the routine trigger with `{"text": <text>}`, then add the 👀 reaction if `react` is `true`.
   `kind` is `ready`, `comment-command` or `requested-reviewer`.
   A comment command's decision also has `comment_id`, the comment to react to, and `instructions`, the comment's instructions or `null` if it has none. Only a comment command reacts.
@@ -180,18 +174,17 @@ Exactly one of:
 | --- | --- |
 | `not-a-review-request` | The event is not a review request, or has no author, comment author or sender to act as the requester (a payload whose `user` or `sender` is `null`). For example a push to a pull request (`synchronize`), a comment on an issue rather than a pull request, an edited or deleted comment, or a review requested from someone other than the review agent or from a team. |
 | `not-a-command` | A new pull request comment whose first line is not a comment command. |
-| `closed` | The request is on a closed pull request, which includes a merged one. Checked before the requester checks, so no membership lookup is made. A comment is checked for the command first. |
+| `closed` | The request is on a closed pull request, which includes a merged one. Checked before the requester checks. A comment is checked for the command first. |
 | `draft` | The pull request is a draft. Only Ready skips drafts. |
-| `bot` | The requester is a bot. No membership lookup is made. |
-| `review-agent` | The requester is the review agent. No membership lookup is made. Ready does not skip this: it reviews the agent's own pull requests. |
+| `bot` | The requester is a bot. |
+| `review-agent` | The requester is the review agent. Ready does not skip this: it reviews the agent's own pull requests. |
 | `fork` | The pull request comes from a fork, or from a fork that was deleted. Comment commands are not skipped for this. |
-| `not-a-team-member` | The requester is not an active member of the team. |
-| `membership-lookup-failed` | Team membership could not be checked: GitHub could not be reached within 30 seconds, answered with an error status or a redirect (the lookup does not follow redirects), or gave an answer that is malformed or larger than 64 KiB. The run shows an error. |
+| `not-the-owner` | The requester is not the owner of the repository, or the event names no owner. |
 | `decision-failed` | The decision itself could not be checked out or run, or did not finish. The workflow adds this reason itself, not the `jq` program. The run shows an error. |
 
 ## Python steps
 
-Some steps, such as the membership lookup, the request to the routine trigger and the 👀 reaction, are written in Python.
+Some steps, such as the request to the routine trigger and the 👀 reaction, are written in Python.
 They use only Python's standard library and keep to Python 3.10, so nothing is installed when they run.
 They read their inputs only from environment variables that the workflow sets.
 
@@ -199,7 +192,6 @@ The code for these steps is in the `steps/` directory:
 
 | File | What it is |
 | --- | --- |
-| `steps/lookup.py` | The membership lookup, in the `decide` job. |
 | `steps/report.py` | The last step of the `decide` job. It passes on the decision, or the `decision-failed` skip, and writes the summary line. |
 | `steps/fire.py` | The request to the routine trigger, in the `fire` job. |
 | `steps/react.py` | The 👀 reaction, in the `react` job. |
@@ -247,7 +239,7 @@ request-decision/test
 ### Adding a test case
 
 1. Make a new directory under `request-decision/cases/`, named for what it checks, such as `ready-draft-skips`.
-2. Add `input.json`: the decision's input, with `event_name`, `event` (the event payload, trimmed to the fields that matter), `review_agent` (usually `"cipherstash-agent"`) and `membership` (`null` to test the decision before a lookup).
+2. Add `input.json`: the decision's input, with `event_name`, `event` (the event payload, trimmed to the fields that matter), and `review_agent` (usually `"cipherstash-agent"`). The event's `repository.owner.login` is the owner.
 3. Add `expected.json`: the decision expected for that input, such as `{"decision": "skip", "reason": "draft"}`.
 4. Run `request-decision/test` and check the new case passes. A case that fails prints the difference between the expected and actual decision.
 
@@ -276,7 +268,7 @@ The harness finds a step's file through the workflow: it reads the step's `STEP_
 `yq` reads only the workflow's structure, such as job names, step ids, `env` and settings, and the short `bash` scripts that start each file.
 No Python code is read out of the workflow.
 
-1. Add a test method to the step's test file, such as `tests/test_lookup.py` or `tests/test_react.py`. Name it for what the step does, such as `test_a_pending_membership_is_not_a_member`.
+1. Add a test method to the step's test file, such as `tests/test_fire.py` or `tests/test_react.py`. Name it for what the step does, such as `test_each_error_status_is_a_warning`.
 2. Run the unit tests and check the new test passes.
 
 Every Python step runs from a file in `steps/`, so none keeps its own copy of the shared code.
@@ -284,7 +276,7 @@ Every Python step runs from a file in `steps/`, so none keeps its own copy of th
 
 To add a new Python step:
 
-1. Write it as a file in `steps/`, importing what it needs from `steps/helpers.py`. Give it a name that is not a standard library module's, such as `notify.py` rather than `email.py`: a test checks this. Give every function type hints, add the module to the list of step files in `pyproject.toml` (see [Linting and type checking](#linting-and-type-checking)), and add the step to the exact set asserted in `tests/test_python_steps.py` (`test_the_lookup_the_report_the_routine_call_and_the_reaction_run_from_files`).
+1. Write it as a file in `steps/`, importing what it needs from `steps/helpers.py`. Give it a name that is not a standard library module's, such as `notify.py` rather than `email.py`: a test checks this. Give every function type hints, add the module to the list of step files in `pyproject.toml` (see [Linting and type checking](#linting-and-type-checking)), and add the step to the exact set asserted in `tests/test_python_steps.py` (`test_the_report_the_routine_call_and_the_reaction_run_from_files`).
 2. In the workflow, give the step an `id`, its file as `STEP_FILE` in its `env`, and a `bash` script that runs the file, or does something safe if the file is missing. If its job has no checkout of this repository yet, copy the `checkout` step from the `fire` job to the start of the job.
 3. Add `tests/test_<step>.py`, running the file with `run_step`, and the `bash` script with `run_step_as_written`.
 
@@ -305,7 +297,7 @@ Fix a finding where you can.
 If the code is right as it is, add a comment on the line that names the rule and gives the reason, such as:
 
 ```python
-except Exception as failure:  # noqa: BLE001 Anything unexpected still ends as a reported lookup-failed.
+except Exception as failure:  # noqa: BLE001 The decision-failed skip, written first, stands.
 ```
 
 To run them yourself, install the pinned versions into a virtual environment, then run them from the repository's root:
@@ -336,7 +328,7 @@ The check fails on any finding.
 Fix the finding, or, if the risk is accepted, add a comment on the line zizmor reports that names the audit and gives the reason:
 
 ```yaml
-  issue_comment: # zizmor: ignore[dangerous-triggers] only a team member's command is acted on
+  issue_comment: # zizmor: ignore[dangerous-triggers] only the owner's command is acted on
 ```
 
 zizmor's findings show as annotations on the pull request's changed files.

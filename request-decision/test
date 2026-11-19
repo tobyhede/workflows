@@ -2,7 +2,7 @@
 # Runs every saved case through the request decision and compares the result with the expected decision.
 #
 # Each case is a directory under request-decision/cases/ holding:
-#   input.json     the decision's input: {"event_name": ..., "event": <payload>, "review_agent": ..., "membership": ...}
+#   input.json     the decision's input: {"event_name": ..., "event": <payload>, "review_agent": ...}
 #   expected.json  the decision expected for that input
 #
 # The decision is request-decision/decision.jq, the same file the reusable workflow's decide job runs.
