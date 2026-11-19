@@ -3,8 +3,9 @@
 # The reusable workflow's decide job checks out this repository at the commit the caller pinned and runs this file,
 # and request-decision/test runs it against the saved cases, so the tests run exactly what ships.
 #
-# Input: {event_name, event, review_agent}. The owner is the account that owns the repository the event is in,
-# event.repository.owner.login. Output, exactly one of:
+# Input: {event_name, event, review_agent, run_url}. The owner is the account that owns the repository the event is
+# in, event.repository.owner.login. run_url, which may be missing, is the link to the workflow run that sends the
+# request: a run's link, or a run attempt's (`…/actions/runs/<id>/attempts/<n>`). Output, exactly one of:
 #   {"decision": "skip", "reason": "<code>"}
 #   {"decision": "fire", "kind": "ready", "requester": "<login>", "pull_request": {"number": N, "url": "…"},
 #    "react": false, "text": "…"}
@@ -39,10 +40,15 @@ def gate_person($p; $fire):
 def fork($pr): $pr.head.repo == null or $pr.head.repo.full_name != $pr.base.repo.full_name;
 
 # The fire decision for a review request. The text names the kind, from the kind itself: the first line says which
-# pull request to review, the second says why the review was requested. Only a comment command gets a reaction.
-# Runs on the decision's input, for the repository name in the event.
+# pull request to review, the second says why the review was requested, and a third, when the input has a run's link,
+# names the workflow run (or attempt) that sent the request. Only a comment command gets a reaction, and its instructions come
+# after all of these, so they stay the end of the text. Runs on the decision's input, for the repository name in the
+# event.
 def request($kind; $requester; $number; $url):
   .event.repository.full_name as $event_repo
+  # The link to the workflow run that sent the request, when the input has one and it is a run's link.
+  | (.run_url | if type == "string" and test("\\Ahttps://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+(/attempts/[0-9]+)?\\z")
+      then . else null end) as $run_url
   | {
       decision: "fire",
       kind: $kind,
@@ -50,7 +56,8 @@ def request($kind; $requester; $number; $url):
       pull_request: {number: $number, url: $url},
       react: ($kind == "comment-command")
     }
-  | .text = "Review pull request #\($number) in \($event_repo): \($url)\n\nKind of review request: \($kind).";
+  | .text = "Review pull request #\($number) in \($event_repo): \($url)\n\nKind of review request: \($kind)."
+  | if $run_url != null then .text += "\n\nSent by workflow run: \($run_url)" else . end;
 
 # Ready: a non-draft pull request opened or reopened, or a draft marked ready for review. The requester is the
 # author, who must be the owner. A pull request the review agent opened is reviewed too, though the agent is not

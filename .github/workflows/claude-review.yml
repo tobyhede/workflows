@@ -40,6 +40,14 @@ on:
       CLAUDE_ROUTINE_TOKEN:
         description: The code-review routine's bearer token.
         required: true
+    outputs:
+      # For a caller that checks what happened.
+      decision:
+        description: The request decision, as JSON, such as {"decision":"skip","reason":"draft"}.
+        value: ${{ jobs.decide.outputs.decision }}
+      sent:
+        description: '"true" only when the routine trigger accepted the review request.'
+        value: ${{ jobs.fire.outputs.sent }}
 
 permissions: {}
 
@@ -96,11 +104,16 @@ jobs:
             exit 1
           fi
           request="$RUNNER_TEMP/request.json"
+          # The link to this attempt of this workflow run, from the runner's own variables. The request text includes
+          # it, so the review shows which run asked for it, and a re-run's reply can be told from an earlier attempt's.
+          # The decision leaves it out unless it is a run's link.
+          run_url="${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}/attempts/${GITHUB_RUN_ATTEMPT:-}"
           jq --null-input --compact-output \
             --arg event_name "$GITHUB_EVENT_NAME" \
             --arg review_agent "$REVIEW_AGENT" \
+            --arg run_url "$run_url" \
             --slurpfile event "$GITHUB_EVENT_PATH" \
-            '{event_name: $event_name, event: $event[0], review_agent: $review_agent}' >"$request"
+            '{event_name: $event_name, event: $event[0], review_agent: $review_agent, run_url: $run_url}' >"$request"
           # Writes one step output. A random delimiter makes any value safe, even one with a newline in it.
           output() {
             local delimiter
