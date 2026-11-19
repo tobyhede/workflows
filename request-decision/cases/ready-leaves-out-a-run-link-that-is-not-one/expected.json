@@ -1,0 +1,11 @@
+{
+  "decision": "fire",
+  "kind": "ready",
+  "requester": "octocat",
+  "pull_request": {
+    "number": 42,
+    "url": "https://github.com/cipherstash/example/pull/42"
+  },
+  "text": "Review pull request #42 in cipherstash/example: https://github.com/cipherstash/example/pull/42\n\nKind of review request: ready.",
+  "react": false
+}

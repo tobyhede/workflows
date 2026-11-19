@@ -1,0 +1,39 @@
+{
+  "event_name": "issue_comment",
+  "review_agent": "cipherstash-agent",
+  "membership": "member",
+  "event": {
+    "action": "created",
+    "issue": {
+      "number": 42,
+      "title": "Add key rotation",
+      "state": "open",
+      "html_url": "https://github.com/cipherstash/example/pull/42",
+      "user": {
+        "login": "octocat",
+        "type": "User"
+      },
+      "pull_request": {
+        "url": "https://api.github.com/repos/cipherstash/example/pulls/42",
+        "html_url": "https://github.com/cipherstash/example/pull/42"
+      }
+    },
+    "comment": {
+      "id": 2500000001,
+      "html_url": "https://github.com/cipherstash/example/pull/42#issuecomment-2500000001",
+      "body": "@cipherstash-agent review focus on the key-rotation path ",
+      "user": {
+        "login": "octocat",
+        "type": "User"
+      }
+    },
+    "repository": {
+      "full_name": "cipherstash/example"
+    },
+    "sender": {
+      "login": "octocat",
+      "type": "User"
+    }
+  },
+  "run_url": "https://github.com/cipherstash/example/actions/runs/1234567890"
+}
