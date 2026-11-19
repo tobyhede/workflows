@@ -5,10 +5,18 @@
 # "property ... is not defined in object type". The shared review workflow uses them to
 # check out this repository at the commit the caller pinned (see #20, #21 and #22).
 #
-# Only those two messages are ignored, and only in claude-review.yml. Every other check
-# still runs on every file. Remove this file once an actionlint release knows the
-# job.workflow_* properties, and bump the pin in checks.yml.
+# GitHub also added the self-repository form, `uses: $/path`, on 30 July 2026. It names
+# this repository at the exact commit that is running. zizmor asks for it in place of
+# `./path`, but actionlint v1.7.12 reports it as a badly formed reusable workflow call.
+# The self-test calls the review workflow that way (see #29).
+#
+# Only these messages are ignored, each only in the file named. Every other check still
+# runs on every file. Remove an entry once an actionlint release knows the syntax, and
+# bump the pin in checks.yml.
 paths:
   .github/workflows/claude-review.yml:
     ignore:
       - 'property "workflow_(repository|sha)" is not defined in object type'
+  .github/workflows/self-test.yml:
+    ignore:
+      - 'reusable workflow call "\$/[^"]*" at "uses" is not following the format'

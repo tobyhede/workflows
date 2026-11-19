@@ -175,8 +175,8 @@ class SelfTestWorkflowTest(unittest.TestCase):
         )
 
     def test_it_calls_this_pull_requests_own_review_workflow(self):
-        # A local path, so the version under test is the pull request's, not a pinned commit.
-        self.assertEqual(value(".jobs.review.uses"), "./.github/workflows/claude-review.yml")
+        # GitHub's self-repository form: this repository, at the exact commit that is running, not a pinned commit.
+        self.assertEqual(value(".jobs.review.uses"), "$/.github/workflows/claude-review.yml")
 
     def test_it_uses_the_stub_routines_trigger_and_token(self):
         self.assertEqual(
