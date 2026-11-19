@@ -9,6 +9,13 @@
 # was of the wrong kind for the event, or if it was not sent, and otherwise waits a few minutes for the stub's reply
 # naming this run attempt.
 #
+# A team member's comment command, a new pull request comment whose first line is `@cipherstash-agent review`, runs the
+# test too, and the verify job also checks that the comment got the review workflow's 👀 reaction. A comment always
+# runs the workflow file, the review workflow and the step files from the default branch, main, so this part tests
+# main's version, not the pull request's, and runs only once this file is on main. Comments that cannot be a comment
+# command start no job: other comments, comments on plain issues or closed pull requests, comments by bots or by the
+# review agent (the stub's own reply among them), and comments by anyone who is not an owner, member or collaborator.
+#
 # Pull requests from forks (which get none of this repository's secrets) and pull requests opened by bots are not
 # tested, and neither are drafts when they are opened or reopened: the skipped job says why. Marking a draft ready, or
 # requesting a review from the review agent, runs the test; the review workflow takes a requested reviewer on a draft
@@ -26,17 +33,24 @@ name: Self-test
 on:
   pull_request:
     types: [opened, reopened, ready_for_review, review_requested]
+  # Runs with this repository's secrets, from main, for any comment on an issue or pull request here. Only a team
+  # member's comment command is acted on: the review job's condition filters out comments that cannot be one, and the
+  # review workflow checks every rule itself, team membership included. No job checks out or runs the pull request's
+  # code; every file comes from main.
+  issue_comment:
+    types: [created]
 
 permissions: {}
 
 jobs:
   # Says why a pull request is not tested. Runs exactly when the review job does not, except for a review requested
-  # from anyone but the review agent or on a closed pull request, which runs neither. The review agent's login must match the review workflow's
+  # from anyone but the review agent or on a closed pull request, and any comment, which run neither. The review agent's login must match the review workflow's
   # review-agent input, which this file leaves at its default; a job's condition cannot read that input. GitHub
   # compares strings ignoring case, as the review workflow does, and a team's request has no requested_reviewer.
   skipped:
     if: >-
-      (github.event.action != 'review_requested'
+      github.event_name == 'pull_request'
+      && (github.event.action != 'review_requested'
       || (github.event.requested_reviewer.login == 'cipherstash-agent' && github.event.pull_request.state == 'open'))
       && ((github.event.action != 'review_requested' && github.event.pull_request.draft)
       || github.event.pull_request.head.repo.full_name != github.repository
@@ -63,17 +77,42 @@ jobs:
           echo "::notice title=Self-test skipped::Not tested: $reason"
           echo "Self-test: skipped ($reason)" >>"$GITHUB_STEP_SUMMARY"
 
-  # Calls this pull request's own version of the review workflow, with the stub routine's trigger and token. A draft is
-  # tested only for a requested reviewer, which the review workflow takes on drafts too.
+  # Calls the review workflow with the stub routine's trigger and token: this pull request's own version for a
+  # pull_request event, and main's for a comment. A draft is tested only for a requested reviewer or a comment
+  # command, which the review workflow takes on drafts too.
+  #
+  # For a comment, the condition is a filter only, and lets through nothing the review workflow would skip as not a
+  # comment command, so a red test always means something: the first line must be `@cipherstash-agent review`
+  # followed by the end of the comment, a space, a tab or a line break (contains, startsWith and == ignore case, as the
+  # review workflow does). A command with other spacing, such as two spaces, is a command to the review workflow but
+  # is not tested. fromJSON gives the tab and line breaks, which an expression's string cannot hold. Comments by bots
+  # and by the review agent (the stub's reply among them) and comments on closed pull requests start no job, because
+  # the review workflow skips them; the author_association test, as in examples/claude-review.yml, keeps comments from
+  # outside the repository's members from starting a runner. The review workflow still decides, and checks team
+  # membership. A comment's payload does not say whether the pull request comes from a fork, and the review workflow
+  # takes comment commands on forks, so they are tested: nothing from the fork is checked out or run.
   review:
     if: >-
-      (github.event.action != 'review_requested'
+      (github.event_name == 'pull_request'
+      && (github.event.action != 'review_requested'
       || (github.event.requested_reviewer.login == 'cipherstash-agent' && github.event.pull_request.state == 'open'))
       && (github.event.action == 'review_requested' || github.event.pull_request.draft == false)
       && github.event.pull_request.head.repo.full_name == github.repository
-      && github.event.pull_request.user.type != 'Bot'
+      && github.event.pull_request.user.type != 'Bot')
+      || (github.event_name == 'issue_comment'
+      && github.event.action == 'created'
+      && github.event.issue.pull_request
+      && github.event.issue.state == 'open'
+      && github.event.comment.user.type != 'Bot'
+      && github.event.comment.user.login != 'cipherstash-agent'
+      && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      && (github.event.comment.body == '@cipherstash-agent review'
+      || startsWith(github.event.comment.body, '@cipherstash-agent review ')
+      || startsWith(github.event.comment.body, format('@cipherstash-agent review{0}', fromJSON('"\t"')))
+      || startsWith(github.event.comment.body, format('@cipherstash-agent review{0}', fromJSON('"\n"')))
+      || startsWith(github.event.comment.body, format('@cipherstash-agent review{0}', fromJSON('"\r\n"')))))
     # The review workflow's jobs can hold no more than this, and GitHub refuses to start it if a job asks for more,
-    # even one that will not run. Only its react job uses it, for a comment command, which this test does not make.
+    # even one that will not run. Only its react job uses it, to add the 👀 reaction to a comment command.
     permissions:
       issues: write
     uses: ./.github/workflows/claude-review.yml
@@ -84,14 +123,15 @@ jobs:
       CLAUDE_REVIEW_APP_ID: ${{ secrets.CLAUDE_REVIEW_APP_ID }}
       CLAUDE_REVIEW_APP_PRIVATE_KEY: ${{ secrets.CLAUDE_REVIEW_APP_PRIVATE_KEY }}
 
-  # Fails unless the review workflow sent a review request and the stub replied naming this run. Runs whenever the
-  # review job ran, even if it failed, so a failure is always explained here.
+  # Fails unless the review workflow sent a review request, the comment command (if that is what started the run) got
+  # the 👀 reaction, and the stub replied naming this run. Runs whenever the review job ran, even if it failed, so a
+  # failure is always explained here.
   verify:
     needs: review
     if: ${{ !cancelled() && needs.review.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Reads the pull request's comments. This repository is public, so the checkout below needs no contents permission,
+    # Reads the pull request's comments, and a comment's reactions. This repository is public, so the checkout below needs no contents permission,
     # as the review workflow's own jobs show.
     permissions:
       issues: read
@@ -99,7 +139,7 @@ jobs:
       # Where the checkout step below puts this repository's step files, as in the review workflow's jobs.
       WORKFLOW_FILES: ${{ github.workspace }}/.cipherstash-workflows
     steps:
-      # This pull request's own steps/ directory, and nothing else. No credentials are kept.
+      # This pull request's own steps/ directory (main's, for a comment), and nothing else. No credentials are kept.
       - name: Check out the step files
         id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,7 +157,14 @@ jobs:
           DECISION: ${{ needs.review.outputs.decision }}
           SENT: ${{ needs.review.outputs.sent }}
           # Which event started this run, so the step can check the request was of the kind that event makes.
+          EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action }}
+          # The comment that started a comment command's run, whose 👀 reaction is checked; a number, or empty for a
+          # pull_request event.
+          COMMENT_ID: ${{ github.event.comment.id }}
+          # The account the review workflow's react job adds the reaction as: the job's token acts as this bot. Only
+          # its reaction counts, so a 👀 added by hand does not pass the test.
+          REACTION_AUTHOR: github-actions[bot]
           # The account the stub routine posts its reply as. Only a comment by this login counts as the reply: the
           # job's token may not see the stub's organisation membership, so the author's standing in the repository is not used.
           REPLY_AUTHOR: cipherstash-agent

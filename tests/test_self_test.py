@@ -1,14 +1,16 @@
 """The self-test workflow, .github/workflows/self-test.yml: what it calls, with which routine, and when."""
 
+import json
 import os
 import re
 import subprocess
 import tempfile
 import unittest
 
-from harness import SELF_TEST, _yq, file_steps, step_field, step_file_path, step_shells
+from harness import ROOT, SELF_TEST, _yq, file_steps, step_field, step_file_path, step_shells
 
 REPOSITORY = "cipherstash/workflows"
+DECISION_FILE = ROOT / "request-decision" / "decision.jq"
 
 
 def value(query):
@@ -17,10 +19,11 @@ def value(query):
 
 class Expression:
     """Evaluates a job's `if:` condition as GitHub does, for the little of GitHub's expression language the self-test
-    uses: `github.` context paths, string literals, true, false, ==, !=, !, && and || with parentheses. As in GitHub,
-    a missing property is null, && and || give one of their operands, and == compares strings ignoring case."""
+    uses: `github.` context paths, string literals, true, false, ==, !=, !, && and || with parentheses, and the
+    functions contains, startsWith, fromJSON and format. As in GitHub, a missing property is null, && and || give one
+    of their operands, and == compares strings ignoring case, as contains and startsWith do."""
 
-    TOKEN = re.compile(r"\s*(?:(&&|\|\||==|!=|!|\(|\))|'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_.-]*))")
+    TOKEN = re.compile(r"\s*(?:(&&|\|\||==|!=|!|\(|\)|,)|'((?:[^']|'')*)'|([A-Za-z_][A-Za-z0-9_.-]*)(?=\s*(\())?)")
 
     def __init__(self, text, context):
         text = text.strip()
@@ -32,11 +35,13 @@ class Expression:
             match = self.TOKEN.match(text, position)
             if match is None:
                 raise ValueError(f"cannot read the expression at {text[position:]!r}")
-            operator, literal, name = match.groups()
+            operator, literal, name, call = match.groups()
             if operator:
                 self.tokens.append(("op", operator))
             elif literal is not None:
                 self.tokens.append(("value", literal.replace("''", "'")))
+            elif call:
+                self.tokens.append(("function", name))
             else:
                 self.tokens.append(("value", self.lookup(name, context)))
             position = match.end()
@@ -105,6 +110,34 @@ class Expression:
             return left.lower() == right.lower()
         return type(left) is type(right) and left == right
 
+    @staticmethod
+    def text(value):
+        """A value as GitHub casts it to a string: null is empty, true and false are lower case."""
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    @classmethod
+    def call(cls, name, arguments):
+        if name == "contains":
+            haystack, needle = arguments
+            if isinstance(haystack, list):
+                return any(cls.same(item, needle) for item in haystack)
+            return cls.text(needle).lower() in cls.text(haystack).lower()
+        if name == "startsWith":
+            whole, start = arguments
+            return cls.text(whole).lower().startswith(cls.text(start).lower())
+        if name == "fromJSON":
+            return json.loads(arguments[0])
+        if name == "format":
+            template, *values = arguments
+            for number, item in enumerate(values):
+                template = template.replace(f"{{{number}}}", cls.text(item))
+            return template
+        raise ValueError(f"the function {name!r} is not known")
+
     def unary(self):
         if self.take("!"):
             return not self.unary()
@@ -114,6 +147,16 @@ class Expression:
                 raise ValueError("a parenthesis is not closed")
             return result
         kind, token = self.peek()
+        if kind == "function":
+            self.position += 1
+            if not self.take("("):
+                raise ValueError(f"the function {token!r} has no arguments")
+            arguments = [self.either()]
+            while self.take(","):
+                arguments.append(self.either())
+            if not self.take(")"):
+                raise ValueError(f"the call to {token!r} is not closed")
+            return self.call(token, arguments)
         if kind != "value":
             raise ValueError(f"expected a value, found {token!r}")
         self.position += 1
@@ -138,8 +181,95 @@ def event(action="opened", draft=False, fork=False, author_type="User", reviewer
     return payload
 
 
+def comment_event(
+    body="@cipherstash-agent review",
+    login="monalisa",
+    author_type="User",
+    association="MEMBER",
+    state="open",
+    on_pull_request=True,
+    action="created",
+):
+    """An issue_comment event's payload, with the fields the jobs' conditions and the request decision read."""
+    issue = {
+        "number": 42,
+        "state": state,
+        "html_url": f"https://github.com/{REPOSITORY}/pull/42",
+        "user": {"login": "cipherstash-agent", "type": "User"},
+    }
+    if on_pull_request:
+        issue["pull_request"] = {
+            "url": f"https://api.github.com/repos/{REPOSITORY}/pulls/42",
+            "html_url": f"https://github.com/{REPOSITORY}/pull/42",
+        }
+    return {
+        "action": action,
+        "issue": issue,
+        "comment": {
+            "id": 2500000001,
+            "body": body,
+            "user": {"login": login, "type": author_type},
+            "author_association": association,
+        },
+        "repository": {"full_name": REPOSITORY},
+        "sender": {"login": login, "type": author_type},
+    }
+
+
 def context_of(payload):
-    return {"github": {"event": payload, "event_name": "pull_request", "repository": REPOSITORY}}
+    event_name = "issue_comment" if "comment" in payload else "pull_request"
+    return {"github": {"event": payload, "event_name": event_name, "repository": REPOSITORY}}
+
+
+def decision_for(payload):
+    """What the review workflow's request decision makes of the comment, for a team member: the independent judge of
+    what is a comment command."""
+    request = {
+        "event_name": "issue_comment",
+        "event": payload,
+        "review_agent": "cipherstash-agent",
+        "membership": "member",
+        "run_url": None,
+    }
+    result = subprocess.run(
+        ["jq", "--compact-output", "--from-file", str(DECISION_FILE)],
+        input=json.dumps(request),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+# Comments the request decision takes as a comment command, by a team member.
+COMMANDS = (
+    "@cipherstash-agent review",
+    "@CipherStash-Agent REVIEW",
+    "@cipherstash-agent review please look at the parser",
+    "@cipherstash-agent review\nFocus on the error handling.",
+    "@cipherstash-agent review\r\nFocus on the error handling.",
+    "@cipherstash-agent review\tsecurity only",
+)
+# Comments that are not a comment command, though some come close.
+NOT_COMMANDS = (
+    "",
+    "Thanks!",
+    "@cipherstash-agent",
+    "@cipherstash-agent thanks for the review",
+    "@cipherstash-agent reviewer",
+    "@cipherstash-agent reviews",
+    "@cipherstash-agent please review",
+    "@cipherstash-agent-2 review",
+    "@cipherstash-agentreview",
+    " @cipherstash-agent review",
+    "> @cipherstash-agent review",
+    "    @cipherstash-agent review",
+    "```\n@cipherstash-agent review\n```",
+    "Please do this.\n@cipherstash-agent review",
+    "@cipherstash-agent review\rmore",
+    "integration-test: received comment-command request from "
+    "https://github.com/cipherstash/workflows/actions/runs/1/attempts/1",
+)
 
 
 def skipped_job_says(payload):
@@ -162,17 +292,20 @@ def skipped_job_says(payload):
 
 
 def jobs_run(payload):
-    """The names of the self-test's jobs, out of skipped and review, that run for the payload."""
+    """The names of the self-test's jobs, out of skipped and review, that run for the payload (a pull_request event's,
+    or an issue_comment event's)."""
     context = context_of(payload)
     return {job for job in ("skipped", "review") if Expression(value(f".jobs.{job}.if"), context).evaluate()}
 
 
 class SelfTestWorkflowTest(unittest.TestCase):
-    def test_it_runs_on_the_ready_and_requested_reviewer_events(self):
-        self.assertEqual(value(".on | keys | .[]"), "pull_request")
+    def test_it_runs_on_the_ready_requested_reviewer_and_comment_events(self):
+        self.assertEqual(sorted(value(".on | keys | .[]").split()), ["issue_comment", "pull_request"])
         self.assertEqual(
             value(".on.pull_request.types[]").split(), ["opened", "reopened", "ready_for_review", "review_requested"]
         )
+        # A new comment only: an edited comment is never a comment command.
+        self.assertEqual(value(".on.issue_comment.types[]").split(), ["created"])
 
     def test_it_calls_this_pull_requests_own_review_workflow(self):
         # A local path, so the version under test is the pull request's, not a pinned commit.
@@ -235,6 +368,65 @@ class SelfTestWorkflowTest(unittest.TestCase):
                     closed = event("review_requested", reviewer=reviewer, state="closed", **case)
                     self.assertEqual(jobs_run(closed), set())
 
+    def test_a_team_members_comment_command_on_a_pull_request_runs_the_review_job(self):
+        for body in COMMANDS:
+            for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+                with self.subTest(body=body, association=association):
+                    self.assertEqual(jobs_run(comment_event(body, association=association)), {"review"})
+
+    def test_every_comment_the_review_job_runs_for_is_a_comment_command_to_the_review_workflow(self):
+        # The job's condition is only a filter, so it must never let through a comment the review workflow would skip
+        # as not a command: the verify job would then fail. The request decision itself is the judge.
+        for body in COMMANDS + NOT_COMMANDS:
+            with self.subTest(body=body):
+                payload = comment_event(body)
+                decision = decision_for(payload)
+                if jobs_run(payload):
+                    self.assertEqual((decision["decision"], decision.get("kind")), ("fire", "comment-command"))
+                if body in COMMANDS:
+                    self.assertEqual(decision.get("kind"), "comment-command", "a listed command is not one")
+
+    def test_a_comment_that_is_not_a_comment_command_runs_no_job(self):
+        for body in NOT_COMMANDS:
+            with self.subTest(body=body):
+                self.assertEqual(jobs_run(comment_event(body)), set())
+
+    def test_a_comment_with_no_body_runs_no_job(self):
+        payload = comment_event()
+        payload["comment"]["body"] = None
+        self.assertEqual(jobs_run(payload), set())
+
+    def test_a_comment_command_by_a_bot_or_by_the_review_agent_runs_no_job(self):
+        # The stub routine posts as the review agent, so its reply can never start another run, whatever it says.
+        for case in (
+            {"author_type": "Bot", "login": "dependabot[bot]"},
+            {"author_type": "Bot", "login": "github-actions[bot]"},
+            {"login": "cipherstash-agent"},
+            {"login": "CipherStash-Agent"},
+        ):
+            with self.subTest(**case):
+                self.assertEqual(jobs_run(comment_event(**case)), set())
+
+    def test_a_comment_command_from_outside_the_repositorys_members_runs_no_job(self):
+        for association in ("CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "MANNEQUIN", None):
+            with self.subTest(association=association):
+                self.assertEqual(jobs_run(comment_event(association=association)), set())
+
+    def test_a_comment_command_on_a_closed_pull_request_or_a_plain_issue_runs_no_job(self):
+        self.assertEqual(jobs_run(comment_event(state="closed")), set())
+        self.assertEqual(jobs_run(comment_event(on_pull_request=False)), set())
+
+    def test_an_edited_or_deleted_comment_runs_no_job(self):
+        for action in ("edited", "deleted"):
+            with self.subTest(action=action):
+                self.assertEqual(jobs_run(comment_event(action=action)), set())
+
+    def test_the_comment_filter_names_the_review_agent_the_review_workflow_acts_for(self):
+        agent = _yq('.on.workflow_call.inputs."review-agent".default').strip()
+        condition = value(".jobs.review.if")
+        self.assertIn(f"github.event.comment.user.login != '{agent}'", condition)
+        self.assertIn(f"'@{agent} review'", condition)
+
     def test_the_skipped_job_says_a_draft_is_why(self):
         for action in ("opened", "reopened"):
             with self.subTest(action=action):
@@ -281,8 +473,16 @@ class SelfTestWorkflowTest(unittest.TestCase):
         )
 
     def test_the_verify_job_is_told_which_event_started_the_run(self):
+        verify = '.jobs.verify.steps[] | select(.id == "verify") | .env'
+        self.assertEqual(value(f"{verify}.EVENT_NAME"), "${{ github.event_name }}")
+        self.assertEqual(value(f"{verify}.EVENT_ACTION"), "${{ github.event.action }}")
+        # The comment that started a comment command's run, whose 👀 reaction the step checks. Empty for other events.
+        self.assertEqual(value(f"{verify}.COMMENT_ID"), "${{ github.event.comment.id }}")
+
+    def test_the_verify_step_accepts_the_reaction_only_from_the_review_workflows_token(self):
+        # The review workflow's react job adds the reaction with the job's token, which acts as this account.
         self.assertEqual(
-            value('.jobs.verify.steps[] | select(.id == "verify") | .env.EVENT_ACTION'), "${{ github.event.action }}"
+            value('.jobs.verify.steps[] | select(.id == "verify") | .env.REACTION_AUTHOR'), "github-actions[bot]"
         )
 
     def test_the_verify_job_reads_the_review_workflows_outputs(self):
@@ -299,8 +499,10 @@ class SelfTestWorkflowTest(unittest.TestCase):
             value(".jobs.verify.steps[] | select(.id == \"verify\") | .env.REPLY_AUTHOR"), "cipherstash-agent"
         )
 
-    def test_the_workflow_does_not_filter_the_reply_by_author_association(self):
-        self.assertNotIn("author_association", SELF_TEST.read_text(encoding="utf-8"))
+    def test_the_verify_job_does_not_filter_the_reply_by_author_association(self):
+        # The review job's comment filter reads the comment command's author_association, as the example caller does;
+        # the stub's reply is accepted by its author's login alone.
+        self.assertNotIn("author_association", value(".jobs.verify | tojson"))
 
     def test_the_review_workflow_gives_its_decision_and_whether_it_sent_the_request(self):
         outputs = '.on.workflow_call.outputs'
