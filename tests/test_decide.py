@@ -29,12 +29,12 @@ class GivenAReadyRequestByTheReviewAgent(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.outputs["decision"])
 
-    def test_the_request_text_ends_with_a_link_to_this_run(self):
+    def test_the_request_text_includes_a_link_to_this_run_attempt(self):
         text = self.decide()["text"]
         self.assertTrue(text.endswith(f"\n\nSent by workflow run: {RUN_URL}"), text)
 
     def test_without_the_runs_details_the_request_is_sent_without_the_link(self):
-        for name in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID"):
+        for name in ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
             with self.subTest(missing=name):
                 decision = self.decide(**{name: None})
                 self.assertEqual(decision["decision"], "fire")

@@ -1,14 +1,15 @@
 """The self-test's verify step: checks that the review workflow requested a review from the stub routine, then waits for
 the stub's reply on the pull request.
 
-Passes only when a comment on the pull request contains the marker `integration-test: received` and this run's link,
-which the review request ends with and the stub echoes back. Fails with one error annotation that says what went wrong:
+Passes only when a comment on the pull request, by an owner, member or collaborator of the repository, contains the
+marker `integration-test: received` and this run attempt's link (`<server>/<repo>/actions/runs/<id>/attempts/<n>`),
+which the review request includes and the stub echoes back. Fails with one error annotation that says what went wrong:
 the review workflow decided not to request a review (naming the skip reason), the request was not sent, or no reply
 came within WAIT_SECONDS.
 
 Inputs, all environment variables: DECISION and SENT (the review workflow's outputs), GITHUB_TOKEN (the job's token,
 which only reads comments) and the runner's GITHUB_API_URL, GITHUB_REPOSITORY, GITHUB_SERVER_URL, GITHUB_RUN_ID,
-GITHUB_OUTPUT and GITHUB_STEP_SUMMARY.
+GITHUB_RUN_ATTEMPT, GITHUB_OUTPUT and GITHUB_STEP_SUMMARY.
 Python's standard library only (3.10 features); tests/test_verify.py runs this file.
 """
 
@@ -20,7 +21,7 @@ import time
 import urllib.request
 from typing import Any
 
-from helpers import Unreachable, error, escaped, github_headers, send
+from helpers import Unreachable, error, escaped, github_headers, send, warning
 
 # How long to wait for the stub's reply in all, and between two reads of the comments, in seconds.
 WAIT_SECONDS = 300
@@ -33,8 +34,13 @@ MAX_PAGES = 30
 # The most of a page's body that is read. A larger answer is not read as a page.
 MAX_BODY_BYTES = 8 * 1024 * 1024
 
-# A run's link, as the review workflow's decide job writes it and the request decision accepts it.
-RUN_URL = re.compile(r"https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+")
+# A run attempt's link, as the review workflow's decide job writes it and the request decision accepts it.
+RUN_URL = re.compile(r"https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/attempts/[0-9]+")
+# Who may post the reply: people with a standing in the repository. Anyone can comment on a public pull request, so a
+# copy of the marker from anyone else is not the stub's reply.
+TRUSTED_AUTHORS = ("OWNER", "MEMBER", "COLLABORATOR")
+# HTTP statuses that reading the comments again cannot fix: the token or the pull request is wrong.
+REFUSED = (401, 403, 404)
 
 
 class Failed(Exception):
@@ -46,10 +52,13 @@ class Unread(Exception):
 
 
 def run_url() -> str:
-    url = "{}/{}/actions/runs/{}".format(
+    """This run attempt's link. A re-run has the same run id and a new attempt, so only the attempt's link tells a reply
+    to this attempt from a reply to an earlier one."""
+    url = "{}/{}/actions/runs/{}/attempts/{}".format(
         os.environ.get("GITHUB_SERVER_URL", ""),
         os.environ.get("GITHUB_REPOSITORY", ""),
         os.environ.get("GITHUB_RUN_ID", ""),
+        os.environ.get("GITHUB_RUN_ATTEMPT", ""),
     )
     if not RUN_URL.fullmatch(url):
         raise Failed("Cannot work out this run's link from the runner's variables, so no reply can be matched to it")
@@ -70,7 +79,8 @@ def requested_pull_request(decision: str, sent: str) -> int:
     if sent != "true":
         raise Failed(
             "The review workflow decided to request a review, but the request was not sent to the stub routine: "
-            "see the error in its fire job"
+            "see the error in its fire job. If its fire job was cancelled, the request may have been replaced by a "
+            "newer request"
         )
     pull_request = value.get("pull_request")
     number = pull_request.get("number") if isinstance(pull_request, dict) else None
@@ -89,6 +99,8 @@ def comments_page(token: str, number: int, page: int) -> list[Any]:
         status, body = send(request, read_ok_bytes=MAX_BODY_BYTES + 1)
     except Unreachable as failure:
         raise Unread(f"Could not reach GitHub to read the pull request's comments ({failure.kind})") from None
+    if status in REFUSED:
+        raise Failed(f"GitHub answered HTTP {status} when asked for the pull request's comments: check the job's token")
     if status != 200:
         raise Unread(f"GitHub answered HTTP {status} when asked for the pull request's comments")
     try:
@@ -100,8 +112,9 @@ def comments_page(token: str, number: int, page: int) -> list[Any]:
     return comments
 
 
-def find_reply(token: str, number: int, url: str) -> dict[str, Any] | None:
-    """The first comment on the pull request that holds the marker and this run's link, not a longer run id."""
+def find_reply(token: str, number: int, url: str, deadline: float) -> dict[str, Any] | None:
+    """The first comment on the pull request, by someone with a standing in the repository, that holds the marker and
+    this run attempt's link, not a longer number. Stops looking at the deadline, even part way through the pages."""
     names_this_run = re.compile(re.escape(url) + r"(?![0-9])")
     for page in range(1, MAX_PAGES + 1):
         comments = comments_page(token, number, page)
@@ -110,9 +123,10 @@ def find_reply(token: str, number: int, url: str) -> dict[str, Any] | None:
                 continue
             found: dict[str, Any] = comment
             body = found.get("body")
-            if isinstance(body, str) and MARKER in body and names_this_run.search(body):
+            trusted = found.get("author_association") in TRUSTED_AUTHORS
+            if trusted and isinstance(body, str) and MARKER in body and names_this_run.search(body):
                 return found
-        if len(comments) < PAGE_SIZE:
+        if len(comments) < PAGE_SIZE or time.monotonic() >= deadline:
             break
     return None
 
@@ -122,7 +136,7 @@ def wait_for_reply(token: str, number: int, url: str) -> dict[str, Any]:
     problem = ""
     while True:
         try:
-            reply = find_reply(token, number, url)
+            reply = find_reply(token, number, url, deadline)
             problem = ""
         except Unread as failure:
             reply = None
@@ -134,8 +148,8 @@ def wait_for_reply(token: str, number: int, url: str) -> dict[str, Any]:
         time.sleep(POLL_SECONDS)
     message = (
         f"No reply from the stub routine within {WAIT_SECONDS:g} seconds: no comment on pull request #{number} "
-        f"contains `{MARKER}` and this run's link, {url}. Check that the stub routine's prompt asks it to post that "
-        "comment, and that it can comment on this repository (see Self-test in the README)"
+        f"contains `{MARKER}` and this run attempt's link, {url}. Check that the stub routine's prompt asks it to post "
+        "that comment, and that it can comment on this repository (see Self-test in the README)"
     )
     if problem:
         message += f". The last read of the comments failed: {problem}"
@@ -152,8 +166,12 @@ def report(reply: dict[str, Any]) -> None:
     fence = "~" * max([3, *(len(run) + 1 for run in re.findall("~+", body))])
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
-        with open(summary, "a", encoding="utf-8") as file:
-            file.write(f"Self-test: passed. The stub routine's reply, from {author}:\n\n{fence}\n{body}\n{fence}\n")
+        try:
+            with open(summary, "a", encoding="utf-8") as file:
+                file.write(f"Self-test: passed. The stub routine's reply, from {author}:\n\n{fence}\n{body}\n{fence}\n")
+        except OSError as failure:
+            # The reply was found, so the test passed; only its record is missing.
+            warning(f"Could not write the job summary ({type(failure).__name__}); the test passed")
 
 
 try:

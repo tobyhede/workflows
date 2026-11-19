@@ -5,7 +5,7 @@
 #
 # Input: {event_name, event, review_agent, membership, run_url}, where membership is null before a lookup, or "member",
 # "not-member" or "lookup-failed" after one, and run_url, which may be missing, is the link to the workflow run that
-# sends the request. Output, exactly one of:
+# sends the request: a run's link, or a run attempt's (`…/actions/runs/<id>/attempts/<n>`). Output, exactly one of:
 #   {"decision": "skip", "reason": "<code>"}
 #   {"decision": "lookup", "requester": "<login>"}
 #   {"decision": "fire", "kind": "ready", "requester": "<login>", "pull_request": {"number": N, "url": "…"},
@@ -45,13 +45,13 @@ def fork($pr): $pr.head.repo == null or $pr.head.repo.full_name != $pr.base.repo
 
 # The fire decision for a review request. The text names the kind, from the kind itself: the first line says which
 # pull request to review, the second says why the review was requested, and a third, when the input has a run's link,
-# names the workflow run that sent the request. Only a comment command gets a reaction, and its instructions come
+# names the workflow run (or attempt) that sent the request. Only a comment command gets a reaction, and its instructions come
 # after all of these, so they stay the end of the text. Runs on the decision's input, for the repository name in the
 # event.
 def request($kind; $requester; $number; $url):
   .event.repository.full_name as $event_repo
   # The link to the workflow run that sent the request, when the input has one and it is a run's link.
-  | (.run_url | if type == "string" and test("\\Ahttps://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+\\z")
+  | (.run_url | if type == "string" and test("\\Ahttps://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+(/attempts/[0-9]+)?\\z")
       then . else null end) as $run_url
   | {
       decision: "fire",

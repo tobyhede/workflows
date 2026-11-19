@@ -110,9 +110,10 @@ jobs:
             exit 1
           fi
           request="$RUNNER_TEMP/request.json"
-          # The link to this workflow run, from the runner's own variables. The request text ends with it, so the
-          # review shows which run asked for it. The decision leaves it out unless it is a run's link.
-          run_url="${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
+          # The link to this attempt of this workflow run, from the runner's own variables. The request text includes
+          # it, so the review shows which run asked for it, and a re-run's reply can be told from an earlier attempt's.
+          # The decision leaves it out unless it is a run's link.
+          run_url="${GITHUB_SERVER_URL:-}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}/attempts/${GITHUB_RUN_ATTEMPT:-}"
           jq --null-input --compact-output \
             --arg event_name "$GITHUB_EVENT_NAME" \
             --arg review_agent "$REVIEW_AGENT" \

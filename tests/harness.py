@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github" / "workflows" / "claude-review.yml"
@@ -254,8 +255,9 @@ RUNNER_VARIABLES = {
     "GITHUB_REPOSITORY": "cipherstash/example",
     "GITHUB_SERVER_URL": "https://github.com",
     "GITHUB_RUN_ID": "1234567890",
+    "GITHUB_RUN_ATTEMPT": "1",
 }
-RUN_URL = "https://github.com/cipherstash/example/actions/runs/1234567890"
+RUN_URL = "https://github.com/cipherstash/example/actions/runs/1234567890/attempts/1"
 
 
 def _run(command, env, api_url, timeout, runner=None):
@@ -309,6 +311,7 @@ class StubServer:
 
     - (status, body), or (status, body, headers) to add headers to the answer. A 3xx answer without a Location header
       gets one pointing at a port nothing listens on.
+    - slow(seconds, route), for one of these answers after that many seconds.
     - HANG, for an answer that never comes.
     - DROP, for a connection closed without an answer.
     - drip(status), for an answer whose status and headers arrive at once and whose body then sends one byte every
@@ -325,9 +328,20 @@ class StubServer:
         def __init__(self, status):
             self.status = status
 
+    class Slow:
+        """An answer that arrives only after this many seconds."""
+
+        def __init__(self, seconds, route):
+            self.seconds = seconds
+            self.route = route
+
     HANG = object()
     DROP = object()
     DRIP = Drip(200)
+
+    @staticmethod
+    def slow(seconds, route):
+        return StubServer.Slow(seconds, route)
 
     @staticmethod
     def drip(status):
@@ -354,6 +368,9 @@ class StubServer:
                 stub.requests.append((method, self.path, self.headers))
                 stub.bodies.append(body)
                 route = stub.routes.get(self.path, (404, '{"message": "Not Found"}'))
+                if isinstance(route, StubServer.Slow):
+                    time.sleep(route.seconds)
+                    route = route.route
                 if route is StubServer.HANG:
                     stub._release.wait(10)
                     return

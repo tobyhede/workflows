@@ -160,7 +160,7 @@ One JSON object:
 | `event` | The event payload GitHub delivers. |
 | `review_agent` | The review agent's login. |
 | `membership` | `null` before the membership lookup; after it, `"member"`, `"not-member"` or `"lookup-failed"`. |
-| `run_url` | Optional. The link to the workflow run that sends the request, such as `https://github.com/cipherstash/example/actions/runs/1234567890`. The `decide` job sets it from the runner's `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID`. |
+| `run_url` | Optional. The link to the workflow run that sends the request, either a run's link, such as `https://github.com/cipherstash/example/actions/runs/1234567890`, or a run attempt's link, such as `https://github.com/cipherstash/example/actions/runs/1234567890/attempts/2`. The `decide` job sets the attempt's link from the runner's `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`. |
 
 ### Output
 
@@ -172,7 +172,7 @@ Exactly one of:
   `kind` is `ready`, `comment-command` or `requested-reviewer`.
   A comment command's decision also has `comment_id`, the comment to react to, and `instructions`, the comment's instructions or `null` if it has none. Only a comment command reacts.
   The text starts with two paragraphs: `Review pull request #<n> in <owner/repo>: <url>`, then `Kind of review request: <kind>.`, which names the kind of review request.
-  If the input has a `run_url` that is a workflow run's link, a third paragraph names it: `Sent by workflow run: <run_url>`. So a review shows which run asked for it, and the [self-test](#self-test) can match the stub's reply to its own run. Any other `run_url` is left out.
+  If the input has a `run_url` that is a workflow run's link, a third paragraph names it: `Sent by workflow run: <run_url>`. So a review shows which run asked for it, and the [self-test](#self-test) can match the stub's reply to its own attempt. Any other `run_url` is left out.
   A comment command with instructions adds a last paragraph:
 
   ```text
@@ -246,9 +246,9 @@ The stub only posts a comment saying it received the request, so a test run is f
 [`.github/workflows/self-test.yml`](.github/workflows/self-test.yml) runs when a pull request in this repository is opened, reopened or marked ready for review.
 
 1. The `review` job calls the pull request's own version of `.github/workflows/claude-review.yml`, by its local path, so the version under test is the one in the pull request. It passes the stub routine's trigger id and token, never the real routine's.
-2. The review workflow decides, as it would for any repository. If it decides to request a review, it sends the request to the stub. The request text ends with a link to this workflow run.
-3. The stub posts a comment on the pull request, echoing the run's link.
-4. The `verify` job checks the review workflow's decision. If it decided to request a review and sent the request, the job reads the pull request's comments every 15 seconds, for up to 5 minutes, until it finds a comment that contains `integration-test: received` and this run's link. It then shows the reply, and its author, in a notice and in the run's summary.
+2. The review workflow decides, as it would for any repository. If it decides to request a review, it sends the request to the stub. The request text includes a link to this run attempt, `<server>/<repo>/actions/runs/<id>/attempts/<n>`.
+3. The stub posts a comment on the pull request, echoing the attempt's link.
+4. The `verify` job checks the review workflow's decision. If it decided to request a review and sent the request, the job reads the pull request's comments every 15 seconds, for up to 5 minutes, until it finds a comment that contains `integration-test: received` and this attempt's link. Only a comment whose `author_association` is `OWNER`, `MEMBER` or `COLLABORATOR` counts, so someone else cannot pass the test by posting the marker on a public pull request. It then shows the reply, and its author, in a notice and in the run's summary.
 
 The test is skipped, and the `skipped` job says why in a notice, for:
 
@@ -282,11 +282,14 @@ The `verify` job fails with one error that says what went wrong:
 
 - `The review workflow decided not to request a review (<reason>)`: the review workflow skipped the request. The reason is one of the [reasons for skipping](#reasons-for-skipping). The `review / decide` job's summary and errors say more. For example, `membership-lookup-failed` means the membership check could not be made.
 - `The review workflow gave no decision to request a review`: the review workflow did not finish its decision. Look at its `decide` job.
-- `... but the request was not sent to the stub routine`: the stub's trigger refused the request or could not be reached. The `review / fire` job's error says why. Check the token secret and the trigger id variable.
-- `No reply from the stub routine within 300 seconds`: the request was sent, but no comment on the pull request names this run. Check that the stub's prompt matches the one above, that the stub can comment on this repository, and the stub's session in Claude. If reading the comments failed as well, the error ends with the last failure.
+- `... but the request was not sent to the stub routine`: the stub's trigger refused the request or could not be reached. The `review / fire` job's error says why. Check the token secret and the trigger id variable. If the `fire` job was cancelled, a newer request (a newer push or event for the same pull request) may have replaced it.
+- `GitHub answered HTTP 401, 403 or 404 when asked for the pull request's comments`: retrying cannot fix it, so the job fails at once. Check the job's token and permissions.
+- `No reply from the stub routine within 300 seconds`: the request was sent, but no comment on the pull request names this run attempt. Check that the stub's prompt matches the one above, that the stub can comment on this repository, and the stub's session in Claude. If reading the comments failed as well, the error ends with the last failure.
 
-Each run looks only for a reply that names its own run, so a reply to an earlier run never counts.
-Re-running the whole workflow keeps the same run link, though, so a re-run can find the reply to an earlier attempt. To test afresh, close and reopen the pull request, or mark it as a draft and then ready again.
+Each attempt looks only for a reply that names its own attempt's link, so a reply to an earlier run or an earlier attempt never counts.
+
+Pushing new commits does not run the self-test again. To test new commits, mark the pull request as a draft and then as ready for review again.
+"Re-run all jobs" tests the same commit again, and gets a new attempt, with a new attempt link.
 
 ## Checks
 
@@ -332,10 +335,10 @@ The `tests` check runs them on Python 3.10, 3.12 and 3.14.
 `tests/harness.py` runs one step of the reusable workflow on its own:
 
 - `run_step(job, step_id, env, api_url=...)` runs the step's file from `steps/` with `python3`, and returns what it left: its exit code, standard output and error, its outputs (`.outputs`), its summary (`.summary`), its `::error::` annotations (`.errors()`) and its `::warning::` annotations (`.warnings()`). The step sees only the `env` the test gives it, which must be names the step declares in its `env`, plus the runner's own variables, such as `GITHUB_OUTPUT`, `GITHUB_API_URL` (`api_url`) and `GITHUB_REPOSITORY`, which is always `cipherstash/example`.
-- `StubServer(routes)` stands in for GitHub's API or the routine trigger. `routes` maps a path to a status and body (and, optionally, headers to add, such as a redirect's `Location`), to `StubServer.HANG` for an answer that never comes, to `StubServer.DROP` for a connection closed without one, or to `StubServer.drip(status)` for an answer whose body never ends, for `GET` and `POST` alike. It records every request's method, path and headers in `.requests`, and its body in `.bodies`.
+- `StubServer(routes)` stands in for GitHub's API or the routine trigger. `routes` maps a path to a status and body (and, optionally, headers to add, such as a redirect's `Location`), to `StubServer.HANG` for an answer that never comes, to `StubServer.DROP` for a connection closed without one, to `StubServer.slow(seconds, route)` for an answer that comes late, or to `StubServer.drip(status)` for an answer whose body never ends, for `GET` and `POST` alike. It records every request's method, path and headers in `.requests`, and its body in `.bodies`.
 - `substitutions` replaces text in the step's code before it runs, such as a timeout constant lowered so a test does not wait, or the routine API's fixed address swapped for the stand-in server's. For a step file, the code includes `steps/helpers.py`. Each piece of text must appear exactly once in all of it. The files in `steps/` are not changed: the harness runs a changed copy.
 - `run_step_as_written(job, step_id, env)` runs a step's `run` script exactly as the workflow writes it, with `bash`. It checks what a step does around its file, such as when the file was not checked out.
-- Both take `runner`, which changes or adds the runner's own variables, such as `GITHUB_EVENT_PATH`; a variable set to `None` is left out. By default a step sees `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY` and `GITHUB_RUN_ID` for run `1234567890` in `cipherstash/example`, whose link is `harness.RUN_URL`.
+- Both take `runner`, which changes or adds the runner's own variables, such as `GITHUB_EVENT_PATH`; a variable set to `None` is left out. By default a step sees `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT` for attempt 1 of run `1234567890` in `cipherstash/example`, whose link is `harness.RUN_URL`.
 - Both read the reusable workflow, unless `workflow=SELF_TEST` names the self-test's.
 
 The harness finds a step's file through the workflow: it reads the step's `STEP_FILE` with `yq` and runs that file from `steps/`.

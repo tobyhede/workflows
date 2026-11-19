@@ -30,8 +30,13 @@ def fire_decision():
     )
 
 
-def comment(body, login="cipherstash-agent", number=1):
-    return {"id": number, "body": body, "user": {"login": login, "type": "User"}}
+def comment(body, login="cipherstash-agent", number=1, association="MEMBER"):
+    return {
+        "id": number,
+        "body": body,
+        "user": {"login": login, "type": "User"},
+        "author_association": association,
+    }
 
 
 def page(*comments):
@@ -39,7 +44,7 @@ def page(*comments):
 
 
 class VerifyTest(unittest.TestCase):
-    def verify(self, routes=None, api_url=None, substitutions=None, **overrides):
+    def verify(self, routes=None, api_url=None, substitutions=None, runner=None, **overrides):
         env = {"GITHUB_TOKEN": TOKEN, "DECISION": fire_decision(), "SENT": "true"}
         env.update(overrides)
         with StubServer(routes) as stub:
@@ -49,6 +54,7 @@ class VerifyTest(unittest.TestCase):
                 env,
                 api_url=api_url or stub.url,
                 substitutions={**QUICK, **(substitutions or {})},
+                runner=runner,
                 workflow=SELF_TEST,
             )
         self.stub = stub
@@ -116,6 +122,16 @@ class GivenTheStubReplies(VerifyTest):
         self.assertFalse(any(line.startswith("::error") for line in result.stdout.splitlines()), result.stdout)
 
 
+class GivenTheSummaryCannotBeWritten(VerifyTest):
+    def test_a_reply_that_was_found_still_passes_with_a_warning(self):
+        unwritable = {"GITHUB_STEP_SUMMARY": "/nonexistent-directory/summary"}
+        result = self.verify({PAGE_1: page(comment(REPLY))}, runner=unwritable)
+        self.assert_passed(result)
+        self.assertEqual(len(result.warnings()), 1, result.stdout + result.stderr)
+        self.assertIn("summary", result.warnings()[0])
+        self.assertIn("Stub routine replied", result.stdout)
+
+
 class GivenNoReplyNamesThisRun(VerifyTest):
     def test_no_reply_in_time_fails_naming_the_run_and_the_marker(self):
         started = time.monotonic()
@@ -135,6 +151,44 @@ class GivenNoReplyNamesThisRun(VerifyTest):
                 result = self.verify({PAGE_1: page(comment(f"integration-test: received ready request from {other}"))})
                 self.assert_failed(result, "No reply from the stub routine")
 
+    def test_a_reply_naming_another_attempt_of_this_run_does_not_count(self):
+        base = "https://github.com/cipherstash/example/actions/runs/1234567890"
+        for other in (f"{base}/attempts/2", f"{base}/attempts/10", f"{base}/attempts/11", base, f"{base}/attempts/"):
+            with self.subTest(other=other):
+                result = self.verify({PAGE_1: page(comment(f"integration-test: received ready request from {other}"))})
+                self.assert_failed(result, "No reply from the stub routine")
+
+    def test_a_reply_naming_this_attempt_passes_even_when_text_follows_it(self):
+        result = self.verify({PAGE_1: page(comment(f"integration-test: received ready request from {RUN_URL}."))})
+        self.assert_passed(result)
+
+    def test_a_reply_from_someone_with_no_association_to_the_repository_is_ignored(self):
+        for association in ("NONE", "FIRST_TIME_CONTRIBUTOR", "CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", None, 7):
+            with self.subTest(association=association):
+                result = self.verify({PAGE_1: page(comment(REPLY, association=association))})
+                self.assert_failed(result, "No reply from the stub routine")
+
+    def test_a_reply_from_an_owner_member_or_collaborator_counts(self):
+        for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+            with self.subTest(association=association):
+                self.assert_passed(self.verify({PAGE_1: page(comment(REPLY, association=association))}))
+
+    def test_a_copy_of_the_reply_from_someone_else_does_not_hide_the_real_one(self):
+        result = self.verify(
+            {PAGE_1: page(comment(REPLY, login="stranger", number=1, association="NONE"), comment(REPLY, number=2))}
+        )
+        self.assert_passed(result)
+        self.assertIn("@cipherstash-agent", result.stdout)
+
+    def test_the_deadline_is_checked_between_pages_too(self):
+        full = StubServer.slow(0.6, page(*[comment(f"comment {n}", number=n) for n in range(100)]))
+        routes = {COMMENTS_PATH.format(page=n): full for n in range(1, 31)}
+        started = time.monotonic()
+        result = self.verify(routes)
+        self.assert_failed(result, "No reply from the stub routine")
+        self.assertLess(time.monotonic() - started, 6, "one read of many pages outlasted the limit")
+        self.assertLess(len(self.stub.requests), 10)
+
     def test_a_comment_naming_this_run_without_the_marker_does_not_count(self):
         result = self.verify({PAGE_1: page(comment(f"Sent by workflow run: {RUN_URL}"))})
         self.assert_failed(result, "No reply from the stub routine")
@@ -144,6 +198,24 @@ class GivenNoReplyNamesThisRun(VerifyTest):
         self.assert_failed(result, "No reply from the stub routine")
         self.assertIn("HTTP 500", result.errors()[0])
         self.assertGreater(len(self.stub.requests), 1, "the step did not keep trying")
+
+    def test_a_refusal_that_retrying_cannot_fix_fails_at_once_naming_the_status(self):
+        for status in (401, 403, 404):
+            with self.subTest(status=status):
+                started = time.monotonic()
+                result = self.verify({PAGE_1: (status, "{}")})
+                self.assert_failed(result, f"HTTP {status}")
+                self.assertNotIn("No reply from the stub routine", result.errors()[0])
+                self.assertEqual(len(self.stub.requests), 1, "the step retried a refusal")
+                self.assertLess(time.monotonic() - started, 0.9)
+
+    def test_rate_limits_are_retried(self):
+        for status in (429, 502):
+            with self.subTest(status=status):
+                result = self.verify({PAGE_1: (status, "{}")})
+                self.assert_failed(result, "No reply from the stub routine")
+                self.assertIn(f"HTTP {status}", result.errors()[0])
+                self.assertGreater(len(self.stub.requests), 1)
 
     def test_an_unreachable_api_is_retried_and_named_if_no_reply_comes(self):
         result = self.verify(api_url=closed_port_url())
@@ -171,6 +243,7 @@ class GivenNoReviewWasRequested(VerifyTest):
             with self.subTest(sent=sent):
                 result = self.verify(SENT=sent)
                 self.assert_failed(result, "the request was not sent to the stub routine")
+                self.assertIn("newer request", result.errors()[0])
                 self.assertEqual(self.stub.requests, [])
 
     def test_a_decision_with_no_pull_request_number_fails_without_reading_comments(self):
@@ -185,7 +258,7 @@ class GivenNoReviewWasRequested(VerifyTest):
 
 class GivenTheRunIsNotKnown(VerifyTest):
     def test_without_the_runs_details_the_step_fails_without_reading_comments(self):
-        for name in ("GITHUB_SERVER_URL", "GITHUB_RUN_ID"):
+        for name in ("GITHUB_SERVER_URL", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
             with self.subTest(missing=name):
                 with StubServer() as stub:
                     result = run_step(

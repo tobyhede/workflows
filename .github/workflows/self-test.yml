@@ -5,7 +5,7 @@
 # When a pull request here is opened, reopened or marked ready for review, the review job calls this pull request's own
 # version of .github/workflows/claude-review.yml (a local path, not a pinned commit), with the stub's trigger id and
 # token. The verify job then fails if the review workflow decided not to request a review, naming the skip reason, or
-# if the request was not sent, and otherwise waits a few minutes for the stub's reply naming this run.
+# if the request was not sent, and otherwise waits a few minutes for the stub's reply naming this run attempt.
 #
 # Drafts, pull requests from forks (which get none of this repository's secrets) and pull requests opened by bots are
 # not tested: the skipped job says why, and marking a draft ready runs the test.
@@ -78,11 +78,10 @@ jobs:
     if: ${{ !cancelled() && needs.review.result != 'skipped' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Reads the step file from this repository, and the pull request's comments.
+    # Reads the pull request's comments. This repository is public, so the checkout below needs no contents permission,
+    # as the review workflow's own jobs show.
     permissions:
-      contents: read
       issues: read
-      pull-requests: read
     env:
       # Where the checkout step below puts this repository's step files, as in the review workflow's jobs.
       WORKFLOW_FILES: ${{ github.workspace }}/.cipherstash-workflows

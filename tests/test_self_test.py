@@ -54,7 +54,7 @@ class SelfTestWorkflowTest(unittest.TestCase):
         self.assertEqual(value(".jobs.verify.if"), "${{ !cancelled() && needs.review.result != 'skipped' }}")
         self.assertEqual(
             value('.jobs.verify.permissions | to_entries | map(.key + "=" + .value) | .[]').split(),
-            ["contents=read", "issues=read", "pull-requests=read"],
+            ["issues=read"],
         )
 
     def test_the_verify_job_reads_the_review_workflows_outputs(self):
