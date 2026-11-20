@@ -41,7 +41,7 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-    uses: tobyhede/workflows/.github/workflows/claude-review.yml@dc1a1d57cfbd225d5e81096d1b89a671683ac154 # personal-v1
+    uses: tobyhede/workflows/.github/workflows/claude-review.yml@d3fc76a58a59431f56b76312afcb0171c1984d74 # personal-v2
     with:
       routine-trigger-id: ${{ vars.CLAUDE_ROUTINE_TRIGGER_ID }}
     secrets:
