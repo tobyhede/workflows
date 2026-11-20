@@ -4,6 +4,7 @@ Reusable GitHub Actions workflows for repositories a personal GitHub account own
 This is a fork of [cipherstash/workflows](https://github.com/cipherstash/workflows), changed so the owner of a repository takes the place of an organisation team.
 
 The one workflow asks Claude to review a pull request.
+This repository uses it on its own pull requests too: [`.github/workflows/review.yml`](.github/workflows/review.yml) listens for the comment command here, and for nothing else.
 
 The words this repository uses, such as *review request* and *owner*, are defined in [CONTEXT.md](CONTEXT.md).
 
