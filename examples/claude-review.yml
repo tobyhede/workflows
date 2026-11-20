@@ -40,7 +40,8 @@ jobs:
     # command; its other jobs hold no permissions.
     permissions:
       issues: write
-    uses: tobyhede/workflows/.github/workflows/claude-review.yml@c0bb47bc09afffcecf0c5dd62a6d8d1cd0ac84aa # personal-tagging-rule
+      pull-requests: write
+    uses: tobyhede/workflows/.github/workflows/claude-review.yml@d3fc76a58a59431f56b76312afcb0171c1984d74 # personal-v2
     with:
       routine-trigger-id: ${{ vars.CLAUDE_ROUTINE_TRIGGER_ID }}
     secrets:

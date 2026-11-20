@@ -41,6 +41,7 @@ warn_return_any = true
 module = [
     "harness",
     "test_check_lock",
+    "test_decide",
     "test_decision_file",
     "test_fire",
     "test_helpers",
