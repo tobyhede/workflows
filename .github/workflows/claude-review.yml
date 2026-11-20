@@ -210,9 +210,11 @@ jobs:
           exit 1
 
   # Adds a 👀 reaction to a comment command once its request has been sent, so the requester knows it was received.
-  # This is the only job that holds a write permission, and it sees only the decision. Reacting to a pull request's
-  # conversation comment uses the issue-comment reactions endpoint, which GitHub documents as needing "Issues: write".
-  # The calling job must grant `issues: write`, because a reusable workflow's jobs cannot hold more than their caller.
+  # This is the only job that holds write permissions, and it sees only the decision. Reacting to a pull request's
+  # conversation comment uses the issue-comment reactions endpoint. GitHub documents it as needing "Issues: write",
+  # but on a pull request's comment it answered HTTP 403 to a token with only that, in the first live comment command
+  # (run 44665882864), so the job also holds `pull-requests: write`. The calling job must grant both, because a
+  # reusable workflow's jobs cannot hold more than their caller.
   # The checkout is given no contents permission. This relies on this repository being public, as for the decide and
   # fire jobs, which hold no permissions at all; it is to be confirmed by the first live run (#20).
   react:
@@ -222,6 +224,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: write
+      pull-requests: write
     env:
       # Where the checkout step below puts this repository's step files.
       WORKFLOW_FILES: ${{ github.workspace }}/.cipherstash-workflows

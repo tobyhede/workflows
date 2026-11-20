@@ -4,8 +4,8 @@ Only HTTP 201 (added) or 200 (already there) counts as reacted. Anything else is
 which the step's continue-on-error keeps from turning the check red. A missing reaction is cosmetic: this step never
 reports an error.
 
-Inputs, all environment variables: GITHUB_TOKEN (the job's token, which needs issues: write), DECISION (the request
-decision) and the runner's GITHUB_API_URL and GITHUB_REPOSITORY.
+Inputs, all environment variables: GITHUB_TOKEN (the job's token, which needs issues: write and pull-requests: write),
+DECISION (the request decision) and the runner's GITHUB_API_URL and GITHUB_REPOSITORY.
 Python's standard library only (3.10 features); tests/test_react.py runs this file.
 """
 
@@ -78,7 +78,7 @@ def react(token: str, decision: str) -> None:
     if status not in (200, 201):
         raise NotReacted(
             f"Could not add the 👀 reaction to comment {comment} (HTTP {status}); the review was still requested. "
-            "Check that the calling job grants issues: write"
+            "Check that the calling job grants issues: write and pull-requests: write"
         )
     print(f"Added the 👀 reaction to comment {comment} (HTTP {status})", flush=True)
 

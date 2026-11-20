@@ -78,7 +78,7 @@ Copy [`examples/claude-review.yml`](examples/claude-review.yml) to `.github/work
 It pins the reusable workflow to a full commit SHA, with the version in a comment.
 
 The example listens to `pull_request` (opened, reopened and ready for review) and `issue_comment` (created) events.
-Its workflow-level permissions are empty, and its calling job grants only `issues: write`, which the reaction needs: a reusable workflow's jobs can never hold more permissions than the job that calls them.
+Its workflow-level permissions are empty, and its calling job grants only `issues: write` and `pull-requests: write`, which the reaction needs: a reusable workflow's jobs can never hold more permissions than the job that calls them.
 Only the reusable workflow's `react` job uses that permission; its other jobs hold none.
 The calling job also has an `if:` that starts the reusable workflow only for comments on pull requests that start with `>` and contain `orb`, to save starting runners for every other comment.
 The reusable workflow still checks every rule itself.
@@ -131,7 +131,8 @@ A run has up to three jobs:
   If the job could not check out its step file, no reaction is added, and the run shows a warning, but the check stays green. A failed checkout also prints its own error annotation, which is not a red check.
 
 `decide` and `fire` hold no permissions.
-`react` holds only `issues: write`, which GitHub documents as the permission for adding a reaction to an issue or pull request comment.
+`react` holds only `issues: write` and `pull-requests: write`.
+GitHub documents `issues: write` as the permission for adding a reaction to an issue or pull request comment, but on a pull request's comment it refused a token with only that (HTTP 403), so the job also holds `pull-requests: write`.
 Only one `fire` runs per pull request at a time, whichever kind of review request started it: a second waits rather than cancelling the first. If a third arrives while the second is still waiting, GitHub's concurrency rules replace the second with it, and the replaced run sends nothing, and its `fire` job shows as cancelled. This is because the group uses `cancel-in-progress: false`, which keeps only one waiting run. The running one is never cancelled, and the newest request is the one that waits.
 
 ## The request decision
@@ -215,7 +216,7 @@ If the report's file was not checked out, the step still writes the `decision-fa
 If the routine call's file was not checked out, the step sends nothing and shows an error.
 If the reaction's file or the helper module was not checked out, or the helper module cannot be loaded, the step adds no reaction and shows a warning.
 
-The `react` job holds only `issues: write`, and no `contents` permission, yet its checkout reads this repository with the job's token.
+The `react` job holds only `issues: write` and `pull-requests: write`, and no `contents` permission, yet its checkout reads this repository with the job's token.
 This relies on this repository being public, as for the `decide` and `fire` jobs, which hold no permissions at all; it is to be confirmed by the first live run (#20).
 
 The routine API's address is fixed in `steps/fire.py`, so no input or event can change where the token goes.
