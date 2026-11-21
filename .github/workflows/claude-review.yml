@@ -36,6 +36,10 @@ on:
         description: The login of the review agent, if there is one. This is the account requested as a reviewer, whose pull requests are reviewed though it is not the owner and whose comments and reviewer requests never request a review. Empty means no review agent.
         type: string
         default: ''
+      runs-on:
+        description: The runner label every job runs on. A self-hosted runner needs bash, jq and Python 3.10 or later, as ubuntu-latest has.
+        type: string
+        default: ubuntu-latest
     secrets:
       CLAUDE_ROUTINE_TOKEN:
         description: The code-review routine's bearer token.
@@ -57,7 +61,7 @@ jobs:
   # Every failure here ends as a skip with an error annotation; the job itself stays green, because every step that
   # can fail has continue-on-error.
   decide:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -152,7 +156,7 @@ jobs:
   fire:
     needs: decide
     if: fromJSON(needs.decide.outputs.decision).decision == 'fire'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 5
     permissions: {}
     # One request per pull request at a time. A second waits rather than cancelling the first, whose request may already
@@ -220,7 +224,7 @@ jobs:
   react:
     needs: [decide, fire]
     if: needs.fire.outputs.sent == 'true' && fromJSON(needs.decide.outputs.decision).react == true
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 5
     permissions:
       issues: write

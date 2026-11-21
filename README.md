@@ -107,6 +107,7 @@ The caller needs these settings on the repository:
 | --- | --- | --- | --- |
 | `routine-trigger-id` | yes | | The routine's trigger id (`trig_…`). |
 | `review-agent` | no | empty | The login of the review agent, if there is one. Empty means no review agent. |
+| `runs-on` | no | `ubuntu-latest` | The runner label every job runs on. A self-hosted runner needs `bash`, `jq` and Python 3.10 or later, as `ubuntu-latest` has. |
 
 The one secret, `CLAUDE_ROUTINE_TOKEN`, is required and must be passed explicitly, as the example does.
 
